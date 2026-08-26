@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-# A股全行业OBOS看板 云端每日自动更新工作流（不依赖用户常开客户端）
+# A股全行业OBOS看板 云端每日自动更新工作流（最简部署：Deploy from a branch）
 #
-# 作用：在 GitHub 云端 runner 跑通「取数 → 计算(含质量门禁) → 前端冒烟 → 组装HTML」，
-#       并把最新 industry-obos-dashboard.html 发布到 GitHub Pages。
-#       用户电脑关机/出差也无妨——GitHub Actions 跑在 GitHub 服务器上。
+# 部署架构（与斐波那契 A-share-Fibonacci 完全同构、已验证年余）：
+#   Pages Source = "Deploy from a branch" / Branch = main / Folder = /(root)
+#   工作流把最新 industry-obos-dashboard.html 复制为 index.html 并 commit 回 main，
+#   GitHub Pages 自动重新部署——push main 即发布，无需 configure-pages / upload-artifact / deploy-pages。
+#   用户电脑关机/出差也无妨，GitHub Actions 跑在 GitHub 服务器上。
 #
-# 部署架构：采用「deploy-pages 制品发布」（与缠论 deploy.yml 一致，效果稳健）：
-#   configure-pages → upload-pages-artifact(path:.) → deploy-pages。
-#   仓库 Settings → Pages → Build and deployment: Source = "GitHub Actions" 即可（非 Deploy from a branch）。
-#
-# 取数架构（对标斐波那契看板 eastmoney/yahoo/stooq 加固）：
+# 取数架构（多源顺序回退，对标斐波那契 eastmoney/yahoo/stooq 加固）：
 #   fetch_data.py / fetch_benchmark.py 均多源顺序回退：
 #     ① 腾讯 proxy.finance.qq.com (中国本地主源)
 #     ② 东方财富 push2his          (海外常被证实可达)
@@ -17,10 +15,10 @@
 #   任一源成功即用；>2 行业取数全失败则整体中止，绝不用残缺数据覆盖线上。
 #
 # 加固（对标斐波那契 daily.yml 四重防漏更）：
-#   ① 多时段 cron 兜底：北京 16:30/18:30/21:00/22:30 四触，任一时段被 GitHub 跳过更晚仍补跑。
-#   ② 取数重试：每个脚本内置 5 次重试 + 三源回退，消除海外 runner 网络抖动偶发失败。
+#   ① 多时段 cron 兜底：北京 16:30/18:30/21:00/22:30 四触。
+#   ② 取数重试：每个脚本内置重试 + 三源回退。
 #   ③ 失败可见告警：流水线失败时开/更新仓库 issue（label=ci-alert）。
-#   ④ 新鲜度门卫 + keep-alive：工作日已更新/周末直接跳过；每日提交 [skip ci] 戳防 GitHub 停用定时。
+#   ④ 新鲜度门卫 + keep-alive：工作日已更新/周末直接跳过；每日提交戳防 GitHub 停用定时。
 
 name: Daily A股全行业OBOS看板更新
 
@@ -33,11 +31,9 @@ on:
     - cron: "30 14 * * *"
   workflow_dispatch: {}   # 允许 Actions 页面手动触发，便于首跑实测与排错
 
-# 部署 Pages 需要 pages/id-token 写权限；contents:write 用于提交每日构建时间戳，保持仓库活跃
+# 仅 contents:write —— 把 index.html 提交回 main 即触发 Pages 自动部署（无需 pages/id-token 权限）
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: obos-daily
@@ -98,7 +94,7 @@ jobs:
         with:
           node-version: "22"
 
-      # 取数（内置 5 次重试 + 三源回退）；连续失败脚本自身 exit≠0 中止，避免脏数据
+      # 取数（内置重试 + 三源回退）；连续失败脚本自身 exit≠0 中止，避免脏数据
       - name: Fetch benchmark (沪深300, multi-source)
         if: steps.fresh.outputs.skip != 'true'
         run: python fetch_benchmark.py
@@ -122,24 +118,26 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: python build_html.py
 
+      # 生成 Pages 入口 index.html（根目录），Pages 以 Deploy from a branch 托管
       - name: Prepare Pages entry (index.html)
         if: steps.fresh.outputs.skip != 'true'
         run: cp industry-obos-dashboard.html index.html
 
-      # 部署到 GitHub Pages（制品发布）
-      - name: Configure Pages
+      # 提交 index.html 回 main → Pages 自动重新部署（与斐波那契同源机制）
+      - name: Commit & push to main (Pages auto-deploys)
         if: steps.fresh.outputs.skip != 'true'
-        uses: actions/configure-pages@v6
-
-      - name: Upload Pages artifact
-        if: steps.fresh.outputs.skip != 'true'
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: .
-
-      - name: Deploy to GitHub Pages
-        if: steps.fresh.outputs.skip != 'true'
-        uses: actions/deploy-pages@v5
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main || true
+          git add industry-obos-dashboard.html index.html
+          if git diff --cached --quiet; then
+            echo "⏭️ 数据无变化，跳过提交"
+          else
+            git commit -m "chore: daily OBOS refresh (auto via GitHub Actions)"
+            git push origin main
+            echo "✅ 已推送最新看板到 main，Pages 将自动重新部署"
+          fi
 
       # keep-alive：记录今日已更新戳并 [skip ci] 提交，防 GitHub 因长期无活动停用定时
       - name: Keep-alive commit (prevent GitHub disabling scheduled runs)
@@ -150,8 +148,8 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase --autostash origin main || true
-          git add last_build.txt data/ industry-obos-dashboard.html index.html
-          git commit -m "chore: daily OBOS refresh [skip ci]" || echo "no changes"
+          git add last_build.txt
+          git commit -m "chore: keep-alive [skip ci]" || echo "no changes"
           git push origin main || echo "keep-alive push skipped"
 
       # 失败可见告警（仅主触发 16:30 与手动触发，避免兜底重试重复噪音）
