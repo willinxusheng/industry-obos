@@ -53,7 +53,12 @@ def get_json(url, tries=5):
 
 
 def parse_tencent(code):
-    """腾讯 newfqkline；返回 [date,open,close,high,low,vol]；不复权(day 键)。"""
+    """腾讯 newfqkline；返回 ([date,open,close,high,low,vol], 实际复权键)；不复权(day 键)。
+
+    注意: 必须如实回传腾讯返回的复权键(qfqday 或 day), 由 main 据实标注 fq_key。
+    若某日腾讯改为返回前复权(qfqday), fq_key 会被标为 "qfq", 触发 compute.quality_gate
+    的 [A5] 复权断言 FAIL —— 绝不让"前复权数据被静默标成 day"绕过 PIT 历史可复现纪律。
+    """
     url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
            "?param=pt01%s,day,,,1300,qfq") % code
     d = get_json(url)
@@ -62,7 +67,7 @@ def parse_tencent(code):
     rows = []
     for r in (node.get(key) or []):
         rows.append([r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])])
-    return rows
+    return rows, key
 
 
 def parse_eastmoney(code):
@@ -79,7 +84,7 @@ def parse_eastmoney(code):
         if len(p) < 6:
             continue
         rows.append([p[0], float(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[5])])
-    return rows
+    return rows, "day"
 
 
 def parse_sina(code):
@@ -92,7 +97,7 @@ def parse_sina(code):
         # 新浪字段顺序 day/open/high/low/close/volume，用命名键避免顺序错配
         rows.append([r["day"], float(r["open"]), float(r["close"]),
                      float(r["high"]), float(r["low"]), float(r["volume"])])
-    return rows
+    return rows, "day"
 
 
 # 优先级：腾讯(主) → 东财 → 新浪（海外可达回退）
@@ -108,7 +113,7 @@ def fetch_rows(sw):
     errs = []
     for name, fn in SOURCES:
         try:
-            rows = fn(sw)
+            rows, fq = fn(sw)
             if len(rows) < 1000:
                 errs.append("%s:rows=%d" % (name, len(rows)))
                 continue
@@ -116,7 +121,7 @@ def fetch_rows(sw):
             if ds != sorted(ds):
                 errs.append("%s:unsorted" % name)
                 continue
-            return rows, name
+            return rows, name, fq
         except Exception as e:
             errs.append("%s:%s" % (name, str(e)[:60]))
     raise RuntimeError("; ".join(errs))
@@ -127,8 +132,8 @@ def main():
     today = datetime.date.today()
     for i, (sw, name) in enumerate(SW1):
         try:
-            rows, src = fetch_rows(sw)
-            out["pt01" + sw] = {"name": name, "sw": sw, "fq_key": "day", "src": src, "rows": rows}
+            rows, src, fq = fetch_rows(sw)
+            out["pt01" + sw] = {"name": name, "sw": sw, "fq_key": ("qfq" if fq == "qfqday" else "day"), "src": src, "rows": rows}
             print("%d/31 pt01%s %s src=%s rows=%d" % (i + 1, sw, name, src, len(rows)), flush=True)
         except Exception as e:
             fail.append(("pt01" + sw, name, str(e)[:120]))

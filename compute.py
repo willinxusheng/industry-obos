@@ -607,14 +607,17 @@ def main():
     sig = "统计显著" if (dp is not None and dp < 0.05) else "统计上不显著"
     wy = bt.get("worst_year") or {}
     cd = (bt.get("cov_diag") or [{}])[0]
+    bt["edge_pct"] = edge  # [B] 单源真值: 点位优势真实值写入 JSON, 前端不再硬编码 8.5%
+    _auc = bt.get("p_up_auc")
+    auc_txt = ("%.3f" % _auc) if isinstance(_auc, (int, float)) else "N/A"  # [D] 缺失显 N/A 而非 nan
     bt["conclusion"] = (
         "方向准确率 %.1f%%（块级 t 检验 p=%s，已按“31行业同期算1块”消除横截面相关导致的显著性夸大），"
-        "升温概率 AUC %.3f。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
+        "升温概率 AUC %s。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
         "该点位优势%s——可信的是方向与区间，不是具体分数。"
         "稳健性：%d 个可比年份中 %s 年方向有效，最差年份 %s 仅 %.1f%%；"
         "条件覆盖最偏的一档是「%s」实测 %.1f%%（目标 50%%）。"
         % ((mm.get("dir_acc") or 0) * 100, mm.get("block_p"),
-           bt.get("p_up_auc") or float("nan"),
+           auc_txt,
            edge if edge is not None else "-", dmv.get("dm_t"), dp, sig,
            len(bt.get("year_stability") or []),
            ("%.0f%%" % ((bt.get("year_win_rate") or 0) * 100)),

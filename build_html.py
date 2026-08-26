@@ -16,6 +16,7 @@ def main():
 
     assert len(echarts_src) > 100000, "echarts source missing or truncated"
     data_js = json.dumps(data, ensure_ascii=False)
+    data_js = data_js.replace("</script>", "<\\/script>")  # [C] 防 DATA 内合法字符串提前闭合 script 标签
     assert "NaN" not in data_js and "Infinity" not in data_js, "non-finite number in DATA"
 
     html = html.replace("__ECHARTS__", "<script>\n" + echarts_src + "\n</script>")
