@@ -287,6 +287,7 @@ def main():
             "基准沪深300为前复权(fq_key=qfq)，与行业未复权(day)口径不一致，rs_pct 相对强度将跨基准偏估")
         if quality["status"] == "PASS":
             quality["status"] = "WARN"
+    quality["benchmark_fq_key"] = bfq  # [E] 基准复权口径透明度(持久化进 artifact, 供下游/审计核对)
     print("QUALITY:", json.dumps(quality, ensure_ascii=False))
     if quality["status"] == "FAIL":
         raise SystemExit("数据质量门禁 FAIL, 拒绝产出: %s" % quality["issues"])
@@ -676,7 +677,7 @@ def main():
                                                for g, v in cal_reg.items()}, ensure_ascii=False))),
                    "price_basis": "板块指数点位，未做复权（接口对 qfq 参数无响应，已实测与未复权逐日完全一致）",
                    "analog_pool": lib.M},
-        "benchmark": {"name": hs["name"], "dates": ref_dates, "close": bclose},
+        "benchmark": {"name": hs["name"], "dates": ref_dates, "close": bclose, "fq_key": bfq},
         "breadth": {"dates": ref_dates, "pct": breadth_pct, "hot_cnt": hot_cnt,
                     "cold_cnt": cold_cnt, "above_cnt": above_cnt, "n_ind": len(industries)},
         "backtest": bt,
