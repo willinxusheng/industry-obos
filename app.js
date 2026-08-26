@@ -59,6 +59,17 @@
   var charts = [];
   function makeChart(id) { var c = echarts.init(document.getElementById(id), null, { renderer: 'svg' }); charts.push(c); return c; }
   var detailChart = null;
+  /* F: dataZoom 双击复位 (契合用户偏好: 缩略条拖手柄缩放/拖窗口平移/双击复位)
+   * 双击在「默认窗口(最近约1年+推演段)」与「全量历史」间切换, 给走势图一个明确的一键复位入口 */
+  var DETAIL_ZOOM = { showStart: null, showEnd: null, isFull: false };
+  function resetZoom() {
+    DETAIL_ZOOM.isFull = !DETAIL_ZOOM.isFull;
+    if (detailChart) detailChart.dispatchAction({
+      type: 'dataZoom',
+      startValue: DETAIL_ZOOM.isFull ? 0 : DETAIL_ZOOM.showStart,
+      endValue: DETAIL_ZOOM.showEnd
+    });
+  }
 
   /* ---------- 数据质量门禁 ---------- */
   function renderQuality() {
@@ -280,6 +291,7 @@
       dataZoom: (function () {
         var showStart = Math.max(0, DATES.length - DETAIL_DEFAULT_DAYS);
         var showEnd = labels.length - 1;
+        DETAIL_ZOOM.showStart = showStart; DETAIL_ZOOM.showEnd = showEnd;
         return [
           { type: 'inside', xAxisIndex: 0, startValue: showStart, endValue: showEnd },
           { type: 'slider', xAxisIndex: 0, height: 20, bottom: 8, startValue: showStart, endValue: showEnd,
@@ -312,7 +324,7 @@
     document.getElementById('detailTitle').textContent = x.name + ' (' + x.sw + ') — 当前 ' + fmt(x.cur_score)
       + ' 分 · ' + stateOf(x) + (x.sig !== '-' ? ' · ' + x.sig : '');
     document.getElementById('detailTitle').style.color = stateColor(x);
-    if (!detailChart) detailChart = makeChart('detail');
+    if (!detailChart) { detailChart = makeChart('detail'); if (detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom); }
     detailChart.setOption(buildDetailOption(x), { notMerge: true });
 
     var rows = document.querySelectorAll('#rankBody tr');
@@ -327,7 +339,6 @@
   function renderBacktest() {
     var bt = DATA.backtest || {};
     var main = bt.main_method || 'knn';
-    var cw = Math.round((bt.combo_w != null ? bt.combo_w : 0.5) * 100);
     var rows = [
       ['组合推演（共识度自适应 0.3–0.7）', 'combo',
         '本版主推演：按类比池共识度自适应收缩保号，共识高多信类比、共识低收敛持平；方向与纯类比池完全一致，压掉点位过度外推'],
