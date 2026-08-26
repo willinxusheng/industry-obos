@@ -1,0 +1,174 @@
+# -*- coding: utf-8 -*-
+# A股全行业OBOS看板 云端每日自动更新工作流（不依赖用户常开客户端）
+#
+# 作用：在 GitHub 云端 runner 跑通「取数 → 计算(含质量门禁) → 前端冒烟 → 组装HTML」，
+#       并把最新 industry-obos-dashboard.html 发布到 GitHub Pages。
+#       用户电脑关机/出差也无妨——GitHub Actions 跑在 GitHub 服务器上。
+#
+# 部署架构：采用「deploy-pages 制品发布」（与缠论 deploy.yml 一致，效果稳健）：
+#   configure-pages → upload-pages-artifact(path:.) → deploy-pages。
+#   仓库 Settings → Pages → Build and deployment: Source = "GitHub Actions" 即可（非 Deploy from a branch）。
+#
+# 取数架构（对标斐波那契看板 eastmoney/yahoo/stooq 加固）：
+#   fetch_data.py / fetch_benchmark.py 均多源顺序回退：
+#     ① 腾讯 proxy.finance.qq.com (中国本地主源)
+#     ② 东方财富 push2his          (海外常被证实可达)
+#     ③ 新浪 money.finance.sina.com (海外常被证实可达)
+#   任一源成功即用；>2 行业取数全失败则整体中止，绝不用残缺数据覆盖线上。
+#
+# 加固（对标斐波那契 daily.yml 四重防漏更）：
+#   ① 多时段 cron 兜底：北京 16:30/18:30/21:00/22:30 四触，任一时段被 GitHub 跳过更晚仍补跑。
+#   ② 取数重试：每个脚本内置 5 次重试 + 三源回退，消除海外 runner 网络抖动偶发失败。
+#   ③ 失败可见告警：流水线失败时开/更新仓库 issue（label=ci-alert）。
+#   ④ 新鲜度门卫 + keep-alive：工作日已更新/周末直接跳过；每日提交 [skip ci] 戳防 GitHub 停用定时。
+
+name: Daily A股全行业OBOS看板更新
+
+on:
+  # 北京时间(=UTC+8)：主 16:30=UTC08:30；兜底 18:30=UTC10:30；21:00=UTC13:00；22:30 健康检查=UTC14:30
+  schedule:
+    - cron: "30 8 * * *"
+    - cron: "30 10 * * *"
+    - cron: "30 13 * * *"
+    - cron: "30 14 * * *"
+  workflow_dispatch: {}   # 允许 Actions 页面手动触发，便于首跑实测与排错
+
+# 部署 Pages 需要 pages/id-token 写权限；contents:write 用于提交每日构建时间戳，保持仓库活跃
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: obos-daily
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # ── 新鲜度门卫（始终运行）──────────────────────────────────────────────
+      - name: Freshness gate (skip if updated today / weekend / intraday manual)
+        id: fresh
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            HM=$(TZ=Asia/Shanghai date +%H:%M)
+            H=${HM%:*}; M=${HM#*:}
+            tmin=$((10#$H * 60 + 10#$M))
+            if [ "$tmin" -ge 570 ] && [ "$tmin" -lt 900 ]; then
+              echo "::notice::手动触发但当前为盘中交易时段（$HM），为避免发布盘中快照当收盘数据，本次跳过。请 15:00 后重新触发或等 16:30 自动补跑。"
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
+          TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          DOW=$(TZ=Asia/Shanghai date +%u)   # 1=Mon .. 7=Sun
+          echo "today=$TODAY dow=$DOW"
+          if [ "$DOW" = "6" ] || [ "$DOW" = "7" ]; then
+            echo "weekend, no trading -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -f last_build.txt ] && grep -q "$TODAY" last_build.txt; then
+            echo "already refreshed today ($TODAY) -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Python deps
+        if: steps.fresh.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+
+      - name: Set up Node
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # 取数（内置 5 次重试 + 三源回退）；连续失败脚本自身 exit≠0 中止，避免脏数据
+      - name: Fetch benchmark (沪深300, multi-source)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python fetch_benchmark.py
+
+      - name: Fetch 31 industries (multi-source)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python fetch_data.py
+
+      # 计算 + 质量门禁（compute.py 内置 quality_gate，status=FAIL 时自行 SystemExit 阻断部署）
+      - name: Compute OBOS + backtest (quality gate)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python compute.py
+
+      # 前端门禁：在 DOM stub 下实跑 app.js，捕获运行时错误/NaN/字段缺失/区间顺序错
+      - name: Frontend smoke test (test_render.js)
+        if: steps.fresh.outputs.skip != 'true'
+        run: node test_render.js
+
+      # 组装自包含 HTML（内联 echarts + data + app.js）
+      - name: Build dashboard HTML
+        if: steps.fresh.outputs.skip != 'true'
+        run: python build_html.py
+
+      - name: Prepare Pages entry (index.html)
+        if: steps.fresh.outputs.skip != 'true'
+        run: cp industry-obos-dashboard.html index.html
+
+      # 部署到 GitHub Pages（制品发布）
+      - name: Configure Pages
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: .
+
+      - name: Deploy to GitHub Pages
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/deploy-pages@v5
+
+      # keep-alive：记录今日已更新戳并 [skip ci] 提交，防 GitHub 因长期无活动停用定时
+      - name: Keep-alive commit (prevent GitHub disabling scheduled runs)
+        if: steps.fresh.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          TZ=Asia/Shanghai date '+%Y-%m-%dT%H:%M:%S%z' > last_build.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main || true
+          git add last_build.txt data/ industry-obos-dashboard.html index.html
+          git commit -m "chore: daily OBOS refresh [skip ci]" || echo "no changes"
+          git push origin main || echo "keep-alive push skipped"
+
+      # 失败可见告警（仅主触发 16:30 与手动触发，避免兜底重试重复噪音）
+      - name: Alert on failure (open/update issue)
+        if: failure() && steps.fresh.outputs.skip != 'true' && (github.event.schedule == '30 8 * * *' || github.event_name == 'workflow_dispatch')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const TITLE = '⚠️ A股全行业OBOS看板每日更新失败';
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const ts = new Date().toISOString();
+            const body = `每日更新流水线失败（${ts}）。\n运行日志：${runUrl}\n请检查取数源（腾讯/东财/新浪是否可达）/ 质量门禁是否异常。`;
+            const existing = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'] });
+            const found = existing.data.find(i => i.title === TITLE);
+            if (found) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: found.number, body: `再次失败 @ ${ts}\n${runUrl}` });
+            } else {
+              await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
+            }
