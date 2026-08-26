@@ -1,20 +1,18 @@
 # -*- coding: utf-8 -*-
-# A股全行业OBOS看板 云端每日自动更新工作流（最简部署：Deploy from a branch）
+# A股全行业OBOS看板 云端每日自动更新工作流（Deploy via actions/deploy-pages，零手动设置）
 #
-# 部署架构（与斐波那契 A-share-Fibonacci 完全同构、已验证年余）：
-#   Pages Source = "Deploy from a branch" / Branch = main / Folder = /(root)
-#   工作流把最新 industry-obos-dashboard.html 复制为 index.html 并 commit 回 main，
-#   GitHub Pages 自动重新部署——push main 即发布，无需 configure-pages / upload-artifact / deploy-pages。
-#   用户电脑关机/出差也无妨，GitHub Actions 跑在 GitHub 服务器上。
+# 部署架构（对标缠论 chanlun/deploy.yml 显式 deploy-pages 模式）：
+#   用 configure-pages@v6 + upload-pages-artifact@v5 + deploy-pages@v5 显式发布，
+#   首次运行即自动在仓库启用并部署 Pages —— 用户无需在 Settings 手动开 Pages（零点击）。
+#   与斐波那契 Deploy-from-a-branch 效果等价，但省去一次性手动设置，契合"不让我点"诉求。
 #
 # 取数架构（多源顺序回退，对标斐波那契 eastmoney/yahoo/stooq 加固）：
-#   fetch_data.py / fetch_benchmark.py 均多源顺序回退：
 #     ① 腾讯 proxy.finance.qq.com (中国本地主源)
 #     ② 东方财富 push2his          (海外常被证实可达)
 #     ③ 新浪 money.finance.sina.com (海外常被证实可达)
 #   任一源成功即用；>2 行业取数全失败则整体中止，绝不用残缺数据覆盖线上。
 #
-# 加固（对标斐波那契 daily.yml 四重防漏更）：
+# 加固（对标两项目四重防漏更）：
 #   ① 多时段 cron 兜底：北京 16:30/18:30/21:00/22:30 四触。
 #   ② 取数重试：每个脚本内置重试 + 三源回退。
 #   ③ 失败可见告警：流水线失败时开/更新仓库 issue（label=ci-alert）。
@@ -23,6 +21,9 @@
 name: Daily A股全行业OBOS看板更新
 
 on:
+  # push main 即触发部署（含本工作流自身更新、以及 keep-alive 之外的源码推送）
+  push:
+    branches: [main]
   # 北京时间(=UTC+8)：主 16:30=UTC08:30；兜底 18:30=UTC10:30；21:00=UTC13:00；22:30 健康检查=UTC14:30
   schedule:
     - cron: "30 8 * * *"
@@ -31,9 +32,11 @@ on:
     - cron: "30 14 * * *"
   workflow_dispatch: {}   # 允许 Actions 页面手动触发，便于首跑实测与排错
 
-# 仅 contents:write —— 把 index.html 提交回 main 即触发 Pages 自动部署（无需 pages/id-token 权限）
+# deploy-pages 需要 pages/id-token 写权限；contents:write 用于 keep-alive 戳提交
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: obos-daily
@@ -118,26 +121,27 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: python build_html.py
 
-      # 生成 Pages 入口 index.html（根目录），Pages 以 Deploy from a branch 托管
+      # 生成 Pages 入口 index.html（根目录）
       - name: Prepare Pages entry (index.html)
         if: steps.fresh.outputs.skip != 'true'
         run: cp industry-obos-dashboard.html index.html
 
-      # 提交 index.html 回 main → Pages 自动重新部署（与斐波那契同源机制）
-      - name: Commit & push to main (Pages auto-deploys)
+      # 配置 Pages（首次运行自动在仓库启用 Pages，无需手动设置）
+      - name: Configure Pages
         if: steps.fresh.outputs.skip != 'true'
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash origin main || true
-          git add industry-obos-dashboard.html index.html
-          if git diff --cached --quiet; then
-            echo "⏭️ 数据无变化，跳过提交"
-          else
-            git commit -m "chore: daily OBOS refresh (auto via GitHub Actions)"
-            git push origin main
-            echo "✅ 已推送最新看板到 main，Pages 将自动重新部署"
-          fi
+        uses: actions/configure-pages@v6
+
+      # 上传产物（单文件 index.html 即完整自包含看板）
+      - name: Upload Pages artifact
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: index.html
+
+      # 部署到 GitHub Pages（首次运行自动创建并发布站点）
+      - name: Deploy to GitHub Pages
+        if: steps.fresh.outputs.skip != 'true'
+        uses: actions/deploy-pages@v5
 
       # keep-alive：记录今日已更新戳并 [skip ci] 提交，防 GitHub 因长期无活动停用定时
       - name: Keep-alive commit (prevent GitHub disabling scheduled runs)
