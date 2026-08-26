@@ -1,5 +1,4 @@
 # 构建产物（由 build_html.py / CI 重新生成，不入库）
 industry-obos-dashboard.html
-index.html
 __pycache__/
 *.pyc
