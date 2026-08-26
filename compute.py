@@ -276,10 +276,17 @@ def main():
         hs = json.load(f)
     ref_dates = hs["dates"]
     bclose = hs["close"]
+    bfq = hs.get("fq_key")  # [E] 基准复权口径(对齐行业 fq_key 透明度)
     asof = ref_dates[-1]
     n_t = len(ref_dates)
 
     quality = quality_gate(raw, ref_dates, bclose)
+    # [E] 跨基准一致性软告警: 基准前复权而行业未复权 -> rs_pct 相对强度跨基准偏估
+    if bfq == "qfq" and "day" in (quality.get("price_basis") or ""):
+        quality["issues"].append(
+            "基准沪深300为前复权(fq_key=qfq)，与行业未复权(day)口径不一致，rs_pct 相对强度将跨基准偏估")
+        if quality["status"] == "PASS":
+            quality["status"] = "WARN"
     print("QUALITY:", json.dumps(quality, ensure_ascii=False))
     if quality["status"] == "FAIL":
         raise SystemExit("数据质量门禁 FAIL, 拒绝产出: %s" % quality["issues"])

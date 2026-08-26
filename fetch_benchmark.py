@@ -35,12 +35,12 @@ def get_json(url, tries=5):
 
 def parse_tencent():
     url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-           "?param=sh000300,day,,,1300,qfq")
+           "?param=sh000300,day,,,1300,day")
     d = get_json(url)
     node = (d.get("data", {}) or {}).get("sh000300") or {}
     key = "qfqday" if "qfqday" in node else "day"
     return [[r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
-            for r in (node.get(key) or [])]
+            for r in (node.get(key) or [])], key
 
 
 def parse_eastmoney():
@@ -56,7 +56,7 @@ def parse_eastmoney():
         if len(p) < 6:
             continue
         rows.append([p[0], float(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[5])])
-    return rows
+    return rows, "day"
 
 
 def parse_sina():
@@ -67,7 +67,7 @@ def parse_sina():
     for r in (d or []):
         rows.append([r["day"], float(r["open"]), float(r["close"]),
                      float(r["high"]), float(r["low"]), float(r["volume"])])
-    return rows
+    return rows, "day"
 
 
 SOURCES = [
@@ -81,7 +81,7 @@ def fetch_rows():
     errs = []
     for name, fn in SOURCES:
         try:
-            rows = fn()
+            rows, fq = fn()
             if len(rows) < 1000:
                 errs.append("%s:rows=%d" % (name, len(rows)))
                 continue
@@ -89,15 +89,16 @@ def fetch_rows():
             if ds != sorted(ds):
                 errs.append("%s:unsorted" % name)
                 continue
-            return rows, name
+            return rows, name, fq
         except Exception as e:
             errs.append("%s:%s" % (name, str(e)[:60]))
     raise RuntimeError("; ".join(errs))
 
 
 def main():
-    rows, src = fetch_rows()
+    rows, src, fq = fetch_rows()
     out = {"code": "sh000300", "name": "沪深300", "src": src,
+           "fq_key": ("qfq" if fq == "qfqday" else "day"),
            "dates": [r[0] for r in rows], "close": [r[2] for r in rows]}
     path = os.path.join(BASE, "data", "benchmark.json")
     with open(path, "w", encoding="utf-8") as f:
