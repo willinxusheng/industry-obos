@@ -129,6 +129,13 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: cp industry-obos-dashboard.html index.html
 
+      # 部署前最后一道门禁：断言本次数据 asof 在新鲜度窗口内（今天及往前4天，覆盖周末+偶发延迟）
+      # 纵深防御：即使 freshness gate 任何逻辑失效，也绝不用陈旧数据覆盖线上
+      - name: Assert data freshness before deploy
+        if: steps.fresh.outputs.skip != 'true'
+        run: |
+          python3 -c "import json,datetime,sys; a=(json.load(open('data/industry_obos.json')).get('asof','') or ''); cut=(datetime.date.today()-datetime.timedelta(days=4)).strftime('%Y-%m-%d'); print('asof='+a+' cutoff>='+cut); sys.exit(0 if (a and a>=cut) else 1)"
+
       # 提交 index.html 回 main；Pages 以 Deploy from a branch 自动重新部署
       # [skip ci] 避免 workflow 递归触发，但不影响 Pages 监听 main 分支的 push 事件
       - name: Commit & push index.html to main
@@ -161,7 +168,7 @@ jobs:
 
       # 失败可见告警（仅主触发 16:30 与手动触发，避免兜底重试重复噪音）
       - name: Alert on failure (open/update issue)
-        if: failure() && steps.fresh.outputs.skip != 'true' && (github.event.schedule == '30 8 * * *' || github.event_name == 'workflow_dispatch')
+        if: failure() && steps.fresh.outputs.skip != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: actions/github-script@v8
         with:
           script: |
