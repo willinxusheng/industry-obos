@@ -44,15 +44,26 @@ def verify_output():
         raise SystemExit("FAILED: 产物不存在 %s" % OUT)
     with open(OUT, encoding="utf-8") as f:
         h = f.read()
-    mb = len(h.encode("utf-8")) / 1048576.0
     left = [p for p in ("__DATA__", "__APPJS__", "__ECHARTS__") if p in h]
     if left:
         raise SystemExit("FAILED: 模板占位符未替换 %s" % left)
-    if mb < 1.0:
-        raise SystemExit("FAILED: 产物体积异常 %.2f MB (疑似 echarts/数据未内联)" % mb)
-    if h.count("<script") < 3:
-        raise SystemExit("FAILED: script 段数不足, 内联可能失败")
-    print("OK: 产物自检 %.2f MB, 占位符全部替换" % mb, flush=True)
+    # 拆分为外链后: 首屏 HTML 应很小(含外链引用)，且 data.js 独立生成
+    if "echarts.min.js" not in h or "data.js" not in h:
+        raise SystemExit("FAILED: 外链引用缺失 (echarts.min.js / data.js)")
+    if "<script" not in h:
+        raise SystemExit("FAILED: 缺少 script 段")
+    mb = len(h.encode("utf-8")) / 1048576.0
+    # 拆外链后首屏 HTML 应远小于原 3.7MB (>5KB 防空壳, <2MB 防又内联回去)
+    if mb < 0.005 or mb > 2.0:
+        raise SystemExit("FAILED: 首屏 HTML 体积异常 %.2f MB" % mb)
+    djs = os.path.join(BASE, "data.js")
+    if not os.path.exists(djs):
+        raise SystemExit("FAILED: data.js 未生成")
+    dmb = os.path.getsize(djs) / 1048576.0
+    if dmb < 1.0:
+        raise SystemExit("FAILED: data.js 体积异常 %.2f MB (数据未写出)" % dmb)
+    print("OK: 产物自检 首屏HTML=%.2f MB, 外链(echarts.min.js+data.js=%.2f MB), 占位符全部替换"
+          % (mb, dmb), flush=True)
 
 
 def main():
