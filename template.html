@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, shrink-to-fit=no"/>
 <title>A股全行业超买超卖趋势看板（专业版）</title>
 <style>
   :root {
@@ -17,7 +17,8 @@
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
-  body { margin: 0; color: var(--ink);
+  body { margin: 0; color: var(--ink); overflow-x: hidden;
+    -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
     min-height: 100vh; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
     font-size: var(--fs-text);
@@ -142,6 +143,68 @@
     .wrap { padding: 14px 10px 40px; }
     .card { padding: 14px 14px; }
   }
+
+  /* ================= 手机端深度优化 ================= */
+  /* 主断点 ≤640：竖屏手机；小手机 ≤420 进一步收紧 */
+  @media (max-width: 640px) {
+    .wrap { padding: 12px 8px 34px; }
+    .hero { padding: 18px 15px; border-radius: 14px; }
+    .hero h1 { font-size: 17px; letter-spacing: .5px; gap: 7px; }
+    .hero h1 .accent-line { margin-top: 8px; width: 38px; }
+    .hero .sub { font-size: 11.5px; line-height: 1.8; }
+    .card { padding: 13px 12px; margin-bottom: 14px; border-radius: 14px; }
+    .card h2 { font-size: 15px; margin-bottom: 11px; }
+    .card h2 .note { font-size: 11px; }
+    .grid6 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .grid3 { grid-template-columns: repeat(1, 1fr); }
+    .metric { padding: 11px 12px; border-radius: 11px; }
+    .metric .v { font-size: 18px; }
+    .metric .v[style*="15px"] { font-size: 13px !important; }
+
+    /* 排名表：精简次要列 + 行业名列左吸顶常驻，横向滚动只留核心 */
+    .twrap { max-height: none; border-radius: 8px; -webkit-overflow-scrolling: touch; }
+    table { font-size: 11px; }
+    th, td { padding: 8px 8px; }
+    .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr, .c-div { display: none; }
+    th.c-name, td.c-name { position: sticky; left: 0; z-index: 2;
+      background: #fff; box-shadow: 1px 0 0 var(--line); }
+    thead th.c-name { background: rgba(244,246,249,.98); }
+    tbody tr:nth-child(even) td.c-name { background: #fafbfc; }
+    tr.sel td.c-name { background: rgba(65,97,126,.12) !important; }
+
+    /* 回测表：隐藏最占宽的说明列 */
+    .bt th, .bt td { padding: 7px 7px; font-size: 11px; }
+    .bt .c-bt-note { display: none; }
+
+    /* 详情图与标题 */
+    #detail { height: 400px; }
+    #detailTitle { font-size: 13px; line-height: 1.45; word-break: break-word; }
+    #indSel { max-width: 100%; font-size: 12px; }
+    .legend-bar { font-size: 10px; padding: 9px 10px; line-height: 1.8; }
+    .disc { font-size: 10px; padding: 12px 13px; }
+  }
+
+  @media (max-width: 420px) {
+    .wrap { padding: 10px 6px 30px; }
+    .hero h1 { font-size: 15.5px; }
+    .grid6 { gap: 7px; }
+    .metric .v { font-size: 16px; }
+    .card { padding: 12px 10px; }
+    .card h2 .note { display: block; margin: 6px 0 0; font-size: 11px; }
+    table { font-size: 10.5px; }
+    th, td { padding: 7px 6px; }
+    .legend-bar { font-size: 9.5px; }
+    .disc { font-size: 9.5px; }
+    #detail { height: 340px; }
+    #detailTitle { font-size: 12px; }
+  }
+
+  /* 刘海屏安全区（iPhone 全面屏等） */
+  @supports (padding: env(safe-area-inset-top)) {
+    .wrap { padding-top: max(12px, env(safe-area-inset-top));
+            padding-left: max(8px, env(safe-area-inset-left));
+            padding-right: max(8px, env(safe-area-inset-right)); }
+  }
 </style>
 </head>
 <body>
@@ -166,9 +229,9 @@
     <div class="twrap">
       <table>
         <thead><tr>
-          <th>#</th><th class="lft">行业</th><th>当前分</th><th>状态</th><th>综合信号</th><th>量能</th>
-          <th>相对强度<br/>分位</th><th>站上<br/>200日</th><th>FDR显著</th><th>背离</th>
-          <th>5日变动</th><th>20日</th><th>60日</th><th>250日</th><th>推演30日<br/>中位</th>
+          <th class="c-rank">#</th><th class="lft c-name">行业</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
+          <th class="c-rs">相对强度<br/>分位</th><th class="c-above">站上<br/>200日</th><th class="c-fdr">FDR显著</th><th class="c-div">背离</th>
+          <th class="c-chg5">5日变动</th><th class="c-ret20">20日</th><th class="c-ret60">60日</th><th class="c-ret250">250日</th><th class="c-fc">推演30日<br/>中位</th>
         </tr></thead>
         <tbody id="rankBody"></tbody>
       </table>

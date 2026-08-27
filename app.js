@@ -142,23 +142,23 @@
       var vColor = vst === '放量' ? '#b1493f' : (vst === '缩量' ? '#3c8168' : '#98a2b3');
       var vTxt = (typeof vr === 'number' ? vr.toFixed(2) : '-') + ' ' + vst;
       html += '<tr data-code="' + x.code + '" class="rowclk' + (i === 0 ? ' sel' : '') + '">'
-        + '<td class="rank">' + (i + 1) + '</td>'
-        + '<td class="lft">' + x.name + '</td>'
-        + '<td><b style="color:' + stateColor(x) + '">' + fmt(s) + '</b></td>'
-        + '<td><span class="chip" style="background:' + stateColor(x) + '" title="本行业 PIT 分位阈值：超买 '
+        + '<td class="rank c-rank">' + (i + 1) + '</td>'
+        + '<td class="lft c-name">' + x.name + '</td>'
+        + '<td class="c-score"><b style="color:' + stateColor(x) + '">' + fmt(s) + '</b></td>'
+        + '<td class="c-state"><span class="chip" style="background:' + stateColor(x) + '" title="本行业 PIT 分位阈值：超买 '
         + fmt(x.ob_line) + ' / 偏热 ' + fmt(x.hot_line) + ' / 偏冷 ' + fmt(x.cold_line)
         + ' / 超卖 ' + fmt(x.os_line) + '">' + stateOf(x) + '</span></td>'
-        + '<td><span style="color:' + sigColor(x.sig_label) + ';font-weight:600">' + x.sig_label + '</span></td>'
-        + '<td><span style="color:' + vColor + '">' + vTxt + '</span></td>'
-        + '<td>' + fmt(x.rs_pct_now) + '</td>'
-        + '<td>' + (x.above_ma200 ? '✓' : '✗') + '</td>'
-        + '<td>' + sigTxt + '</td>'
-        + '<td>' + divTxt(x.divergence) + '</td>'
-        + '<td>' + chgTxt + '</td>'
-        + '<td>' + fmt(x.ret20) + '%</td>'
-        + '<td>' + fmt(x.ret60) + '%</td>'
-        + '<td>' + fmt(x.ret250) + '%</td>'
-        + '<td>' + fmt(fcEnd) + '</td>'
+        + '<td class="c-sig"><span style="color:' + sigColor(x.sig_label) + ';font-weight:600">' + x.sig_label + '</span></td>'
+        + '<td class="c-vol"><span style="color:' + vColor + '">' + vTxt + '</span></td>'
+        + '<td class="c-rs">' + fmt(x.rs_pct_now) + '</td>'
+        + '<td class="c-above">' + (x.above_ma200 ? '✓' : '✗') + '</td>'
+        + '<td class="c-fdr">' + sigTxt + '</td>'
+        + '<td class="c-div">' + divTxt(x.divergence) + '</td>'
+        + '<td class="c-chg5">' + chgTxt + '</td>'
+        + '<td class="c-ret20">' + fmt(x.ret20) + '%</td>'
+        + '<td class="c-ret60">' + fmt(x.ret60) + '%</td>'
+        + '<td class="c-ret250">' + fmt(x.ret250) + '%</td>'
+        + '<td class="c-fc">' + fmt(fcEnd) + '</td>'
         + '</tr>';
     });
     document.getElementById('rankBody').innerHTML = html;
@@ -167,6 +167,8 @@
   /* ---------- 单行业详情图 ---------- */
   var curCode = INDS[0].code;
   function buildDetailOption(x) {
+    var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
+    var IS_MOBILE = _vw <= 640;
     var n = x.score.length;
     var H = DATA.horizon;
     var labels = DATES.concat(x.forecast.future_dates);
@@ -244,8 +246,8 @@
     return {
       animationDuration: 600,
       tooltip: { trigger: 'axis',
-        backgroundColor: 'rgba(255,255,255,.96)', borderWidth: 0, padding: [10, 12],
-        extraCssText: 'box-shadow:0 6px 24px rgba(16,24,40,.16);border:1px solid rgba(169,139,93,.28);border-radius:10px;font-size:12px;',
+        backgroundColor: 'rgba(255,255,255,.96)', borderWidth: 0, padding: IS_MOBILE ? [8, 10] : [10, 12],
+        extraCssText: 'box-shadow:0 6px 24px rgba(16,24,40,.16);border:1px solid rgba(169,139,93,.28);border-radius:10px;font-size:' + (IS_MOBILE ? 11 : 12) + 'px;',
         axisPointer: { type: 'line', snap: true,
           lineStyle: { color: '#9aa6b2', width: 1, type: 'dashed' },
           label: { show: true, backgroundColor: '#a98b5d', color: '#fff', fontSize: 11 } },
@@ -259,11 +261,12 @@
           return txt;
         } },
       legend: { data: ['超买超卖分', '相对强度分位', '推演中位', '行业指数', '动态超买线', '动态超卖线'],
-        top: 4, itemGap: 16, textStyle: { fontSize: 12, color: '#6c7884' } },
-      grid: { left: 48, right: 72, top: 44, bottom: 66 },
+        top: IS_MOBILE ? 2 : 4, itemGap: IS_MOBILE ? 8 : 16, type: IS_MOBILE ? 'scroll' : 'plain',
+        textStyle: { fontSize: IS_MOBILE ? 10 : 12, color: '#6c7884' } },
+      grid: { left: IS_MOBILE ? 40 : 48, right: IS_MOBILE ? 50 : 72, top: IS_MOBILE ? 42 : 44, bottom: IS_MOBILE ? 58 : 66 },
       axisPointer: { link: [{ xAxisIndex: 'all' }], snap: true },
       xAxis: { type: 'category', data: labels,
-        axisLabel: { color: '#6c7884', fontSize: 10, hideOverlap: true,
+        axisLabel: { color: '#6c7884', fontSize: IS_MOBILE ? 9 : 10, hideOverlap: true,
           formatter: function (v, idx) { return showIdx[idx] ? v : ''; } },
         axisLine: { lineStyle: { color: '#d8dce2' } },
         axisPointer: { show: true, snap: true, label: { show: true, backgroundColor: '#41617e', color: '#fff', fontSize: 11 } } },
@@ -391,7 +394,7 @@
         + '<td>' + (m.rmse_path != null ? m.rmse_path : '-') + '</td>'
         + '<td>' + dmTxt + '</td>'
         + '<td>' + (m.n || 0) + '</td>'
-        + '<td class="lft" style="color:var(--sub);white-space:normal;max-width:280px">' + row[2] + '</td></tr>';
+        + '<td class="lft c-bt-note" style="color:var(--sub);white-space:normal;max-width:280px">' + row[2] + '</td></tr>';
     });
     document.getElementById('btBody').innerHTML = html;
     document.getElementById('btNote').innerHTML = '<b>结论：</b>' + (bt.conclusion || '回测数据不足')
@@ -421,6 +424,7 @@
       if (tr && tr.getAttribute('data-code')) renderDetail(tr.getAttribute('data-code'));
     });
     window.addEventListener('resize', function () { charts.forEach(function (c) { c.resize(); }); });
+    window.addEventListener('orientationchange', function () { setTimeout(function () { if (detailChart) renderDetail(curCode); }, 250); });
   }
 
   renderQuality();

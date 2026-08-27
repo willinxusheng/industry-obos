@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, shrink-to-fit=no"/>
 <title>A股全行业超买超卖趋势看板（专业版）</title>
 <style>
   :root {
@@ -17,7 +17,8 @@
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
-  body { margin: 0; color: var(--ink);
+  body { margin: 0; color: var(--ink); overflow-x: hidden;
+    -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
     min-height: 100vh; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
     font-size: var(--fs-text);
@@ -142,6 +143,68 @@
     .wrap { padding: 14px 10px 40px; }
     .card { padding: 14px 14px; }
   }
+
+  /* ================= 手机端深度优化 ================= */
+  /* 主断点 ≤640：竖屏手机；小手机 ≤420 进一步收紧 */
+  @media (max-width: 640px) {
+    .wrap { padding: 12px 8px 34px; }
+    .hero { padding: 18px 15px; border-radius: 14px; }
+    .hero h1 { font-size: 17px; letter-spacing: .5px; gap: 7px; }
+    .hero h1 .accent-line { margin-top: 8px; width: 38px; }
+    .hero .sub { font-size: 11.5px; line-height: 1.8; }
+    .card { padding: 13px 12px; margin-bottom: 14px; border-radius: 14px; }
+    .card h2 { font-size: 15px; margin-bottom: 11px; }
+    .card h2 .note { font-size: 11px; }
+    .grid6 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .grid3 { grid-template-columns: repeat(1, 1fr); }
+    .metric { padding: 11px 12px; border-radius: 11px; }
+    .metric .v { font-size: 18px; }
+    .metric .v[style*="15px"] { font-size: 13px !important; }
+
+    /* 排名表：精简次要列 + 行业名列左吸顶常驻，横向滚动只留核心 */
+    .twrap { max-height: none; border-radius: 8px; -webkit-overflow-scrolling: touch; }
+    table { font-size: 11px; }
+    th, td { padding: 8px 8px; }
+    .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr, .c-div { display: none; }
+    th.c-name, td.c-name { position: sticky; left: 0; z-index: 2;
+      background: #fff; box-shadow: 1px 0 0 var(--line); }
+    thead th.c-name { background: rgba(244,246,249,.98); }
+    tbody tr:nth-child(even) td.c-name { background: #fafbfc; }
+    tr.sel td.c-name { background: rgba(65,97,126,.12) !important; }
+
+    /* 回测表：隐藏最占宽的说明列 */
+    .bt th, .bt td { padding: 7px 7px; font-size: 11px; }
+    .bt .c-bt-note { display: none; }
+
+    /* 详情图与标题 */
+    #detail { height: 400px; }
+    #detailTitle { font-size: 13px; line-height: 1.45; word-break: break-word; }
+    #indSel { max-width: 100%; font-size: 12px; }
+    .legend-bar { font-size: 10px; padding: 9px 10px; line-height: 1.8; }
+    .disc { font-size: 10px; padding: 12px 13px; }
+  }
+
+  @media (max-width: 420px) {
+    .wrap { padding: 10px 6px 30px; }
+    .hero h1 { font-size: 15.5px; }
+    .grid6 { gap: 7px; }
+    .metric .v { font-size: 16px; }
+    .card { padding: 12px 10px; }
+    .card h2 .note { display: block; margin: 6px 0 0; font-size: 11px; }
+    table { font-size: 10.5px; }
+    th, td { padding: 7px 6px; }
+    .legend-bar { font-size: 9.5px; }
+    .disc { font-size: 9.5px; }
+    #detail { height: 340px; }
+    #detailTitle { font-size: 12px; }
+  }
+
+  /* 刘海屏安全区（iPhone 全面屏等） */
+  @supports (padding: env(safe-area-inset-top)) {
+    .wrap { padding-top: max(12px, env(safe-area-inset-top));
+            padding-left: max(8px, env(safe-area-inset-left));
+            padding-right: max(8px, env(safe-area-inset-right)); }
+  }
 </style>
 </head>
 <body>
@@ -166,9 +229,9 @@
     <div class="twrap">
       <table>
         <thead><tr>
-          <th>#</th><th class="lft">行业</th><th>当前分</th><th>状态</th><th>综合信号</th><th>量能</th>
-          <th>相对强度<br/>分位</th><th>站上<br/>200日</th><th>FDR显著</th><th>背离</th>
-          <th>5日变动</th><th>20日</th><th>60日</th><th>250日</th><th>推演30日<br/>中位</th>
+          <th class="c-rank">#</th><th class="lft c-name">行业</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
+          <th class="c-rs">相对强度<br/>分位</th><th class="c-above">站上<br/>200日</th><th class="c-fdr">FDR显著</th><th class="c-div">背离</th>
+          <th class="c-chg5">5日变动</th><th class="c-ret20">20日</th><th class="c-ret60">60日</th><th class="c-ret250">250日</th><th class="c-fc">推演30日<br/>中位</th>
         </tr></thead>
         <tbody id="rankBody"></tbody>
       </table>
@@ -418,23 +481,23 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
       var vColor = vst === '放量' ? '#b1493f' : (vst === '缩量' ? '#3c8168' : '#98a2b3');
       var vTxt = (typeof vr === 'number' ? vr.toFixed(2) : '-') + ' ' + vst;
       html += '<tr data-code="' + x.code + '" class="rowclk' + (i === 0 ? ' sel' : '') + '">'
-        + '<td class="rank">' + (i + 1) + '</td>'
-        + '<td class="lft">' + x.name + '</td>'
-        + '<td><b style="color:' + stateColor(x) + '">' + fmt(s) + '</b></td>'
-        + '<td><span class="chip" style="background:' + stateColor(x) + '" title="本行业 PIT 分位阈值：超买 '
+        + '<td class="rank c-rank">' + (i + 1) + '</td>'
+        + '<td class="lft c-name">' + x.name + '</td>'
+        + '<td class="c-score"><b style="color:' + stateColor(x) + '">' + fmt(s) + '</b></td>'
+        + '<td class="c-state"><span class="chip" style="background:' + stateColor(x) + '" title="本行业 PIT 分位阈值：超买 '
         + fmt(x.ob_line) + ' / 偏热 ' + fmt(x.hot_line) + ' / 偏冷 ' + fmt(x.cold_line)
         + ' / 超卖 ' + fmt(x.os_line) + '">' + stateOf(x) + '</span></td>'
-        + '<td><span style="color:' + sigColor(x.sig_label) + ';font-weight:600">' + x.sig_label + '</span></td>'
-        + '<td><span style="color:' + vColor + '">' + vTxt + '</span></td>'
-        + '<td>' + fmt(x.rs_pct_now) + '</td>'
-        + '<td>' + (x.above_ma200 ? '✓' : '✗') + '</td>'
-        + '<td>' + sigTxt + '</td>'
-        + '<td>' + divTxt(x.divergence) + '</td>'
-        + '<td>' + chgTxt + '</td>'
-        + '<td>' + fmt(x.ret20) + '%</td>'
-        + '<td>' + fmt(x.ret60) + '%</td>'
-        + '<td>' + fmt(x.ret250) + '%</td>'
-        + '<td>' + fmt(fcEnd) + '</td>'
+        + '<td class="c-sig"><span style="color:' + sigColor(x.sig_label) + ';font-weight:600">' + x.sig_label + '</span></td>'
+        + '<td class="c-vol"><span style="color:' + vColor + '">' + vTxt + '</span></td>'
+        + '<td class="c-rs">' + fmt(x.rs_pct_now) + '</td>'
+        + '<td class="c-above">' + (x.above_ma200 ? '✓' : '✗') + '</td>'
+        + '<td class="c-fdr">' + sigTxt + '</td>'
+        + '<td class="c-div">' + divTxt(x.divergence) + '</td>'
+        + '<td class="c-chg5">' + chgTxt + '</td>'
+        + '<td class="c-ret20">' + fmt(x.ret20) + '%</td>'
+        + '<td class="c-ret60">' + fmt(x.ret60) + '%</td>'
+        + '<td class="c-ret250">' + fmt(x.ret250) + '%</td>'
+        + '<td class="c-fc">' + fmt(fcEnd) + '</td>'
         + '</tr>';
     });
     document.getElementById('rankBody').innerHTML = html;
@@ -443,6 +506,8 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
   /* ---------- 单行业详情图 ---------- */
   var curCode = INDS[0].code;
   function buildDetailOption(x) {
+    var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
+    var IS_MOBILE = _vw <= 640;
     var n = x.score.length;
     var H = DATA.horizon;
     var labels = DATES.concat(x.forecast.future_dates);
@@ -520,8 +585,8 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
     return {
       animationDuration: 600,
       tooltip: { trigger: 'axis',
-        backgroundColor: 'rgba(255,255,255,.96)', borderWidth: 0, padding: [10, 12],
-        extraCssText: 'box-shadow:0 6px 24px rgba(16,24,40,.16);border:1px solid rgba(169,139,93,.28);border-radius:10px;font-size:12px;',
+        backgroundColor: 'rgba(255,255,255,.96)', borderWidth: 0, padding: IS_MOBILE ? [8, 10] : [10, 12],
+        extraCssText: 'box-shadow:0 6px 24px rgba(16,24,40,.16);border:1px solid rgba(169,139,93,.28);border-radius:10px;font-size:' + (IS_MOBILE ? 11 : 12) + 'px;',
         axisPointer: { type: 'line', snap: true,
           lineStyle: { color: '#9aa6b2', width: 1, type: 'dashed' },
           label: { show: true, backgroundColor: '#a98b5d', color: '#fff', fontSize: 11 } },
@@ -535,11 +600,12 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
           return txt;
         } },
       legend: { data: ['超买超卖分', '相对强度分位', '推演中位', '行业指数', '动态超买线', '动态超卖线'],
-        top: 4, itemGap: 16, textStyle: { fontSize: 12, color: '#6c7884' } },
-      grid: { left: 48, right: 72, top: 44, bottom: 66 },
+        top: IS_MOBILE ? 2 : 4, itemGap: IS_MOBILE ? 8 : 16, type: IS_MOBILE ? 'scroll' : 'plain',
+        textStyle: { fontSize: IS_MOBILE ? 10 : 12, color: '#6c7884' } },
+      grid: { left: IS_MOBILE ? 40 : 48, right: IS_MOBILE ? 50 : 72, top: IS_MOBILE ? 42 : 44, bottom: IS_MOBILE ? 58 : 66 },
       axisPointer: { link: [{ xAxisIndex: 'all' }], snap: true },
       xAxis: { type: 'category', data: labels,
-        axisLabel: { color: '#6c7884', fontSize: 10, hideOverlap: true,
+        axisLabel: { color: '#6c7884', fontSize: IS_MOBILE ? 9 : 10, hideOverlap: true,
           formatter: function (v, idx) { return showIdx[idx] ? v : ''; } },
         axisLine: { lineStyle: { color: '#d8dce2' } },
         axisPointer: { show: true, snap: true, label: { show: true, backgroundColor: '#41617e', color: '#fff', fontSize: 11 } } },
@@ -667,7 +733,7 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
         + '<td>' + (m.rmse_path != null ? m.rmse_path : '-') + '</td>'
         + '<td>' + dmTxt + '</td>'
         + '<td>' + (m.n || 0) + '</td>'
-        + '<td class="lft" style="color:var(--sub);white-space:normal;max-width:280px">' + row[2] + '</td></tr>';
+        + '<td class="lft c-bt-note" style="color:var(--sub);white-space:normal;max-width:280px">' + row[2] + '</td></tr>';
     });
     document.getElementById('btBody').innerHTML = html;
     document.getElementById('btNote').innerHTML = '<b>结论：</b>' + (bt.conclusion || '回测数据不足')
@@ -697,6 +763,7 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
       if (tr && tr.getAttribute('data-code')) renderDetail(tr.getAttribute('data-code'));
     });
     window.addEventListener('resize', function () { charts.forEach(function (c) { c.resize(); }); });
+    window.addEventListener('orientationchange', function () { setTimeout(function () { if (detailChart) renderDetail(curCode); }, 250); });
   }
 
   renderQuality();
