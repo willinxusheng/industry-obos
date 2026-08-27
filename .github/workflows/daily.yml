@@ -16,7 +16,7 @@
 #   ① 多时段 cron 兜底：北京 16:30/18:30/21:00/22:30 四触。
 #   ② 取数重试：每个脚本内置重试 + 三源回退。
 #   ③ 失败可见告警：流水线失败时开/更新仓库 issue（label=ci-alert）。
-#   ④ 新鲜度门卫 + keep-alive：工作日已更新/周末直接跳过；每日提交戳防 GitHub 停用定时。
+#   ④ 新鲜度门卫(基于数据交易日 asof + 盘后保护) + keep-alive：数据已含今日收盘/周末/盘前跳过；每日提交戳防 GitHub 停用定时。
 
 name: Daily A股全行业OBOS看板更新
 
@@ -53,26 +53,31 @@ jobs:
           fetch-depth: 0
 
       # ── 新鲜度门卫（始终运行）──────────────────────────────────────────────
-      - name: Freshness gate (skip if updated today / weekend / intraday manual)
+      # 设计：基于「数据最新交易日 asof」判断，而非"今天是否跑过"戳。
+      #   - 周末跳过；盘前(北京<16:00)跳过，避免把不完整盘中K线当收盘数据发布；
+      #   - 若 checkout 的上一版数据 asof 已等于今日 -> 已含收盘 -> 跳过；
+      #   - 否则拉取+计算+部署。彻底消除"早次 run 误标今天→主更新被跳过"的竞态。
+      - name: Freshness gate (skip if data current / weekend / intraday)
         id: fresh
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            HM=$(TZ=Asia/Shanghai date +%H:%M)
-            H=${HM%:*}; M=${HM#*:}
-            tmin=$((10#$H * 60 + 10#$M))
-            if [ "$tmin" -ge 570 ] && [ "$tmin" -lt 900 ]; then
-              echo "::notice::手动触发但当前为盘中交易时段（$HM），为避免发布盘中快照当收盘数据，本次跳过。请 15:00 后重新触发或等 16:30 自动补跑。"
-              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
-            fi
-          fi
           TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
           DOW=$(TZ=Asia/Shanghai date +%u)   # 1=Mon .. 7=Sun
           echo "today=$TODAY dow=$DOW"
           if [ "$DOW" = "6" ] || [ "$DOW" = "7" ]; then
             echo "weekend, no trading -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ -f last_build.txt ] && grep -q "$TODAY" last_build.txt; then
-            echo "already refreshed today ($TODAY) -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          HM=$(TZ=Asia/Shanghai date +%H:%M)
+          H=${HM%:*}; M=${HM#*:}
+          tmin=$((10#$H * 60 + 10#$M))
+          if [ "$tmin" -lt 960 ]; then
+            echo "盘前($HM)，不发布不完整盘中快照，等 16:30 后主更新 -> skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # 盘后：仅当数据已含今日收盘(asof==今天)才跳过；否则必更新
+          ASOF=$(python3 -c "import json;print((json.load(open('data/industry_obos.json')).get('asof','') or ''))" 2>/dev/null || true)
+          echo "asof=$ASOF"
+          if [ "$ASOF" = "$TODAY" ]; then
+            echo "数据已含今日($TODAY)收盘 -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
