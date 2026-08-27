@@ -182,7 +182,9 @@ jobs:
           git pull --rebase --autostash origin main || true
           git add last_build.txt
           git commit -m "chore: keep-alive [skip ci]" || echo "no changes"
-          git push origin main || echo "keep-alive push skipped"
+          # 不静默吞失败：推送失败以 ::warning:: 注解显眼标黄（不使整条流水线变红，
+          # 避免误触发"每日更新失败"issue；仅提示丢失防停用戳，数据更新已先行完成）
+          git push origin main || echo "::warning::keep-alive 戳推送失败（不影响今日数据更新，仅丢失防 GitHub 停用定时的戳，请检查推送权限/并发冲突）"
 
       # 失败可见告警（仅主触发 16:30 与手动触发，避免兜底重试重复噪音）
       - name: Alert on failure (open/update issue)
