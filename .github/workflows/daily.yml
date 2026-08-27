@@ -153,6 +153,24 @@ jobs:
             echo "✅ index.html pushed, Pages will auto-deploy from main"
           fi
 
+      # 部署后验收：轮询线上 main 的 data.js，确认 asof 已更新为今天；
+      # 兜底捕获"推送未生效 / 提交了错误产物"，未更新则失败触发告警（避免静默不更新）
+      - name: Verify deployed data freshness (post-push gate)
+        if: steps.fresh.outputs.skip != 'true'
+        run: |
+          EXPECTED=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          for i in $(seq 1 24); do
+            sleep 15
+            ASOF=$(curl -fsS --max-time 20 "https://raw.githubusercontent.com/${{ github.repository }}/main/data.js" \
+              | python3 -c "import sys,re; t=sys.stdin.read(); m=re.search(r'\"asof\"\s*:\s*\"([0-9-]+)\"', t); print(m.group(1) if m else '')" 2>/dev/null || true)
+            if [ "$ASOF" = "$EXPECTED" ]; then
+              echo "✅ 线上 data.js asof=$ASOF 已是最新($EXPECTED)"; exit 0
+            fi
+            echo "poll $i/24: asof=$ASOF (期望 $EXPECTED)"
+          done
+          echo "::error::部署后 6 分钟内线上 data.js 仍未更新为 $EXPECTED（当前 $ASOF），推送可能未生效"
+          exit 1
+
       # keep-alive：记录今日已更新戳并 [skip ci] 提交，防 GitHub 因长期无活动停用定时
       - name: Keep-alive commit (prevent GitHub disabling scheduled runs)
         if: steps.fresh.outputs.skip != 'true'
