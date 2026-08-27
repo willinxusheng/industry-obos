@@ -466,7 +466,9 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
       med.push(lastScore); base.push(lastScore); band.push(0);
       for (var k = 0; k < H; k++) {
         med.push(x.forecast.median[k]); base.push(x.forecast.p25[k]);
-        band.push(+(x.forecast.p75[k] - x.forecast.p25[k]).toFixed(1));
+        var _lo = x.forecast.p25[k], _hi = x.forecast.p75[k];
+        band.push((typeof _lo === 'number' && typeof _hi === 'number' && isFinite(_lo) && isFinite(_hi))
+                   ? +(+_hi - +_lo).toFixed(1) : null);
       }
     } else {
       for (var k2 = 0; k2 <= H; k2++) { med.push(null); base.push(null); band.push(null); }
@@ -497,7 +499,7 @@ var DATA = {"asof": "2026-08-26", "win": 252, "horizon": 30, "quality": {"n_indu
     var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
 
     var pu = x.forecast.p_up;
-    var puTxt = (typeof pu === 'number')
+    var puTxt = (typeof pu === 'number' && isFinite(pu))
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
         + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
       : '';
