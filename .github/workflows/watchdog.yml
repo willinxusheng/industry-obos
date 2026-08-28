@@ -46,27 +46,54 @@ jobs:
               }
             } catch (e) { console.log('listCommits err: ' + e.message); }
 
-            // (b) data.js asof 是否在新鲜度窗口内
-            let asof = '';
+            // (b) data.js 是否新鲜：同时检查"仓库源文件"与"线上 Pages 站点"
+            //     之前只看源文件，漏掉"源已更新但 Pages 部署静默失败"——用户看到的仍是旧的
+            let srcAsOf = '', liveAsOf = '';
             try {
               const resp = await github.rest.repos.getContent({ owner, repo, path: 'data.js', ref: 'main' });
               const txt = Buffer.from(resp.data.content, 'base64').toString('utf8');
               const m = txt.match(/"asof"\s*:\s*"([0-9-]+)"/);
-              asof = m ? m[1] : '';
-            } catch (e) { console.log('getContent err: ' + e.message); }
+              srcAsOf = m ? m[1] : '';
+            } catch (e) { console.log('getContent(src) err: ' + e.message); }
 
-            const fresh = asof && asof >= cutoff;
-            console.log(`ranToday=${ranToday} asof=${asof} fresh=${fresh}`);
-            if (ranToday && fresh) { console.log('✅ 健康：今日流水线已运行且数据新鲜'); return; }
+            // 线上 Pages 站点(用户浏览器实际加载) asof，带重试避免 CI 偶发网络误报
+            try {
+              const liveUrl = `https://${owner}.github.io/${repo}/data.js`;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                  const liveResp = await fetch(liveUrl, { redirect: 'follow' });
+                  if (liveResp.ok) {
+                    const txt = await liveResp.text();
+                    const m = txt.match(/"asof"\s*:\s*"([0-9-]+)"/);
+                    liveAsOf = m ? m[1] : '';
+                    break;
+                  }
+                  console.log(`live fetch attempt ${attempt} status ${liveResp.status}`);
+                } catch (e2) { console.log(`live fetch attempt ${attempt} err: ${e2.message}`); }
+                if (attempt < 3) await new Promise(r => setTimeout(r, 3000));
+              }
+            } catch (e) { console.log('live fetch err: ' + e.message); }
 
-            // 不健康 -> 开/更新 ci-alert issue
+            const srcFresh = srcAsOf && srcAsOf >= cutoff;
+            const liveFresh = liveAsOf && liveAsOf >= cutoff;
+            const fresh = srcFresh && liveFresh;
+            console.log(`ranToday=${ranToday} srcAsOf=${srcAsOf} liveAsOf=${liveAsOf} fresh=${fresh}`);
+            if (ranToday && fresh) { console.log('✅ 健康：今日流水线已运行，源与线上 Pages 数据均新鲜'); return; }
+
+            // 不健康 -> 开/更新 ci-alert issue（区分失败原因便于定位）
             const TITLE = '⚠️ A股OBOS看板 watchdog：今日云端未正常更新';
             const ts = new Date().toISOString();
+            const reasons = [];
+            if (!ranToday) reasons.push('流水线今日未运行(无 bot 提交)');
+            if (!srcFresh) reasons.push(`源 data.js asof=${srcAsOf || '缺失'} 不在窗口(>=${cutoff})`);
+            if (srcFresh && !liveFresh) reasons.push(`源已更新(asof=${srcAsOf})但线上 Pages 站点 asof=${liveAsOf || '缺失/不可达'} 未同步，疑似 GitHub Pages 部署失败`);
             const body = `看门狗检测：今日(${today})云端未正常更新。\n` +
               `- 流水线今日是否运行(有 bot 提交): ${ranToday}\n` +
-              `- data.js asof: ${asof || '缺失'} (新鲜度窗口 >= ${cutoff})\n` +
+              `- 源 data.js asof: ${srcAsOf || '缺失'} (新鲜度窗口 >= ${cutoff})\n` +
+              `- 线上 Pages 站点 asof: ${liveAsOf || '缺失/不可达'}\n` +
+              `- 判定: ${reasons.join('；') || '未知'}\n` +
               `- 若今日为非交易日/节假日可忽略本条。\n` +
-              `请检查：GitHub 定时调度是否被跳过、取数源(腾讯/东财/新浪)是否可达、或 main 分支写入权限是否失效。`;
+              `请检查：GitHub 定时调度是否被跳过、取数源(腾讯/东财/新浪)是否可达、main 写入权限、或 GitHub Pages 部署是否失败。`;
             const existing = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'] });
             const found = existing.data.find(i => i.title === TITLE);
             if (found) {
