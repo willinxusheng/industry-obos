@@ -167,6 +167,7 @@ jobs:
       # 部署前最后一道门禁：断言本次数据 asof 在新鲜度窗口内（今天及往前4天，覆盖周末+偶发延迟）
       # 纵深防御：即使 freshness gate 任何逻辑失效，也绝不用陈旧数据覆盖线上
       - name: Assert data freshness before deploy
+        id: assert
         if: steps.fresh.outputs.skip != 'true'
         env:
           ASOF_BEFORE: ${{ steps.fresh.outputs.asof_before }}
@@ -174,6 +175,10 @@ jobs:
           NEW=$(python3 -c "import json;print((json.load(open('data/industry_obos.json')).get('asof','') or ''))")
           CUT=$(python3 -c "import datetime;print((datetime.date.today()-datetime.timedelta(days=4)).strftime('%Y-%m-%d'))")
           echo "asof_new=$NEW asof_before=$ASOF_BEFORE cutoff>=$CUT"
+          # 把本次构建产出的 asof 传给下游验收步骤。
+          # ⚠️ 验收绝不能再写死"今天"：凌晨补更窗口产出的是「上一交易日」数据，
+          #    若期望值写死今天，补更必然验收失败并误报告警。
+          echo "asof_new=$NEW" >> "$GITHUB_OUTPUT"
           # 关键：若新 asof 与运行前完全相同，说明"没有更新的交易日数据"（节假日/数据源
           # 尚未发布当日K线）。这不是故障——放行让提交步骤自然 no-op、验收步骤跳过，
           # 30 分钟后自动重试即可。若在此处判失败，长假(春节/国庆)期间会每天刷 48 条误报告警。
@@ -215,7 +220,15 @@ jobs:
         # 而本次未提交，则跳过验收——否则会误判为部署失败并刷屏告警（定时已加密到每30分钟）。
         if: steps.fresh.outputs.skip != 'true' && steps.commit.outputs.pushed == 'true'
         run: |
-          EXPECTED=$(TZ=Asia/Shanghai date +%Y-%m-%d)
+          # 期望值 = 本次实际构建出的 asof（由断言步骤产出），绝不能写死"今天"。
+          # 原因：凌晨补更窗口产出的是「上一交易日」数据，若期望值写死今天，
+          #      则每一次补更都会因等不到"今天"而验收失败并误报告警。
+          EXPECTED="${{ steps.assert.outputs.asof_new }}"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::未拿到本次构建的 asof（断言步骤未产出 asof_new），无法验收"
+            exit 1
+          fi
+          echo "本次构建 asof=$EXPECTED（凌晨补更时该值为上一交易日，属正常）"
           OWNER=${GITHUB_REPOSITORY%/*}; REPO=${GITHUB_REPOSITORY#*/}
           SRC="https://raw.githubusercontent.com/$OWNER/$REPO/main/data.js"
           LIVE="https://$OWNER.github.io/$REPO/data.js"
@@ -248,7 +261,8 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         continue-on-error: true
         run: |
-          TZ=Asia/Shanghai date '+%Y-%m-%dT%H:%M:%S%z' > last_build.txt
+          # 同样不依赖 TZ（与门卫一致，用 UTC+8 纯算术）
+          date -u -d "+8 hours" '+%Y-%m-%dT%H:%M:%S+0800' > last_build.txt
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase --autostash origin main || true
