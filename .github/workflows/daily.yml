@@ -67,32 +67,52 @@ jobs:
       - name: Freshness gate (skip if data current / weekend / intraday)
         id: fresh
         run: |
-          TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
-          DOW=$(TZ=Asia/Shanghai date +%u)   # 1=Mon .. 7=Sun
-          echo "today=$TODAY dow=$DOW"
+          # 北京时间 = UTC+8（中国无夏令时），刻意不用 TZ=Asia/Shanghai：
+          # 一旦 runner 缺 tzdata，TZ 会被静默忽略、tmin 变成 UTC 口径，
+          # 盘中封锁窗口将整体错位（16:00 的闸门会跑到北京午夜），更新彻底停摆。
+          # 改为纯算术换算，零外部依赖，杜绝这个单点故障。
+          UTC_H=$(date -u +%H); UTC_M=$(date -u +%M)
+          tmin=$(( (10#$UTC_H * 60 + 10#$UTC_M + 480) % 1440 ))
+          HM=$(printf "%02d:%02d" $((tmin / 60)) $((tmin % 60)))
+          TODAY=$(date -u -d "+8 hours" +%Y-%m-%d)
+          DOW=$(date -u -d "+8 hours" +%u)   # 1=Mon .. 7=Sun
+          echo "北京 $TODAY $HM (dow=$DOW tmin=$tmin)"
           # ⚠️ 必须读 data.js(已发布产物)而非 data/industry_obos.json：
           #   提交步骤只 add index.html/echarts.min.js/data.js，data/ 目录从不入库，
-          #   仓库里那份 json 是永久陈旧的快照(实测停在 2026-08-26)。若拿它判断，
-          #   "asof==今天就跳过"永远不会命中 —— 定时加密到每30分钟后，会导致每天
-          #   48 次全部走全量取数+计算(约3小时 runner 白烧)。data.js 才是线上真实状态。
+          #   仓库里那份 json 是永久陈旧的快照。若拿它判断，"已最新就跳过"永远不命中
+          #   —— 定时加密到每30分钟后会导致每天 48 次全量跑(约3小时 runner 白烧)。
           # 记录「本次运行前的线上数据交易日」，供下游判断"是否真的取到了新数据"
           # （节假日/数据源尚未发布当日K线时，新 asof 会等于旧 asof，此时不应判失败）
           ASOF=$(python3 -c "import re,io; t=io.open('data.js',encoding='utf-8').read(); m=re.search(r'\"asof\"\s*:\s*\"([0-9-]+)\"', t); print(m.group(1) if m else '')" 2>/dev/null || true)
           echo "asof_before=$ASOF"
           echo "asof_before=$ASOF" >> "$GITHUB_OUTPUT"
           if [ "$DOW" = "6" ] || [ "$DOW" = "7" ]; then
-            echo "weekend, no trading -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "周末休市 -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          HM=$(TZ=Asia/Shanghai date +%H:%M)
-          H=${HM%:*}; M=${HM#*:}
-          tmin=$((10#$H * 60 + 10#$M))
-          if [ "$tmin" -lt 960 ]; then
-            echo "盘前($HM)，不发布不完整盘中快照，等 16:30 后主更新 -> skip"
+          # 盘中及收盘结算期(09:30-16:00)一律跳过：绝不发布不完整盘中K线当收盘数据。
+          # 16:00 而非 15:00，是给数据源留 1 小时落定当日日线。
+          if [ "$tmin" -ge 570 ] && [ "$tmin" -lt 960 ]; then
+            echo "盘中/结算期($HM)，不发布不完整数据 -> skip"
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # 盘后：仅当数据已含今日收盘(asof==今天)才跳过；否则必更新
-          if [ "$ASOF" = "$TODAY" ]; then
-            echo "数据已含今日($TODAY)收盘 -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          # 期望的最新「完整交易日」：
+          #   16:00 之后  -> 今天（当日收盘应已可取）
+          #   凌晨 00:00-09:30 -> 上一个工作日（此时今日尚未开盘，最新完整数据是昨天）
+          # 凌晨窗口的意义：若前一交易日傍晚的更新窗口因 GitHub 定时漂移而没命中，
+          #   凌晨这次会把上一个交易日的数据补上 —— 保证数据永不超过 1 天滞后。
+          if [ "$tmin" -ge 960 ]; then
+            EXPECTED="$TODAY"
+          elif [ "$DOW" = "1" ]; then
+            EXPECTED=$(date -u -d "+8 hours -3 days" +%Y-%m-%d)   # 周一凌晨 -> 上周五
+          else
+            EXPECTED=$(date -u -d "+8 hours -1 day" +%Y-%m-%d)
+          fi
+          echo "expected=$EXPECTED asof=$ASOF"
+          # 注意：bash 的 [[ ]] 不支持 ">= " 字符串比较（只支持 < 和 >），
+          # 故拆成 "等于 或 大于" 两个判断，等价表达 ASOF >= EXPECTED。
+          if [ -n "$ASOF" ] && { [ "$ASOF" = "$EXPECTED" ] || [[ "$ASOF" > "$EXPECTED" ]]; }; then
+            echo "数据已含最新完整交易日($ASOF >= $EXPECTED) -> skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi

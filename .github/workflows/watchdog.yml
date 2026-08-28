@@ -1,17 +1,29 @@
 # -*- coding: utf-8 -*-
-# 看门狗：独立于每日更新流水线，检测"云端当日未更新"的盲区。
+# 看门狗：独立于每日更新流水线，专门捕获"该更新却没更新"的漏网情况。
 #
-# 每日更新流水线(daily.yml)若被 GitHub 定时调度静默跳过(只 skip 不 fail)，
-# 现有 failure() 失败告警永不触发 —— 这是"该更没更且无人知"的唯一残留根源。
-# 本看门狗在每晚北京 23:45 独立检查两项信号，任一不满足即开/更新 ci-alert issue：
-#   (a) github-actions[bot] 今日是否在 main 提交过  -> 流水线是否真的跑了
-#   (b) data.js 的 asof 是否在新鲜度窗口内(>= 今天-4天) -> 数据是否新鲜
-# 与 daily.yml 双保险：即使 daily 自身被跳过，看门狗(独立定时)仍能发现并告警。
+# 为什么必须存在：daily.yml 的失败告警依赖 failure()，但"定时被跳过/被门卫 skip"
+# 是 success 结局，failure() 永不触发 —— 那种"静默漏更"只有看门狗能发现。
+#
+# 为什么改成每 30 分钟跑一次：GitHub 的 schedule 会延迟 9~10 小时且漂移，
+# 原来只在北京 23:45 跑一次，被延迟后落到次日上午，判定时机完全错位。
+# 加密度后，必定有运行落进"北京凌晨判定窗口"。
+#
+# 为什么只在北京 00:00-09:30 判定：此时"上一个交易日"的更新窗口(16:00-24:00)
+# 已完整过去。若在傍晚判定，会因 GitHub 定时漂移（更新可能 18:40 才发生）
+# 而把"还没轮到更新"误报成"漏更"。凌晨判定 = 不会误报。
+#
+# 告警分级（关键，避免节假日刷屏）：
+#   数据落后 且 bot 已 >=1 天没提交 -> 真漏更，开 ci-alert issue
+#   数据落后 但 bot 近期有提交     -> 流水线在跑，只是没有更新的交易日数据
+#                                    （节假日/数据源未发布当日K线），只记 notice 不告警
 name: OBOS Daily Watchdog
 
 on:
   schedule:
-    - cron: "45 15 * * 1-5"   # 北京 23:45，周一至周五（周末市场休市，无需检查）
+    # 每 30 分钟一次（不用 1-5 限制星期：GitHub cron 的星期按 UTC，
+    # 与北京时间会错位，改为在脚本里用北京时间判断周末）
+    - cron: "0 * * * *"
+    - cron: "30 * * * *"
   workflow_dispatch: {}        # 允许手动触发实测
 
 permissions:
@@ -23,32 +35,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Liveness check (bot commit today + data fresh)
+      - name: Liveness check (previous trading day updated?)
         uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
-            const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' });
-            const today = fmt.format(new Date());
-            const dow = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date());
-            const d = new Date(); d.setDate(d.getDate() - 4);
-            const cutoff = fmt.format(d);
-            console.log(`watchdog: today=${today} dow=${dow} cutoff=${cutoff}`);
-            if (dow === 'Sat' || dow === 'Sun') { console.log('周末，跳过检查'); return; }
+            // 北京时间 = UTC+8（纯算术，不依赖 Intl 时区数据，杜绝 tzdata 缺失风险）
+            const now = new Date();
+            const bj = new Date(now.getTime() + 8 * 3600 * 1000);
+            const today = bj.toISOString().slice(0, 10);
+            const tmin = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+            const dow = bj.getUTCDay();   // 0=Sun .. 6=Sat
+            const hm = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
+            console.log(`watchdog 北京 ${today} ${hm} (dow=${dow}, tmin=${tmin})`);
 
-            // (a) 今日是否有 github-actions[bot] 提交（流水线是否真的跑了）
-            let ranToday = false;
-            try {
-              const commits = await github.rest.repos.listCommits({ owner, repo, author: 'github-actions[bot]', per_page: 10 });
-              for (const c of commits.data) {
-                const cd = fmt.format(new Date(c.commit.committer.date));
-                if (cd === today) { ranToday = true; break; }
-              }
-            } catch (e) { console.log('listCommits err: ' + e.message); }
+            if (dow === 0 || dow === 6) { console.log('周末休市，跳过'); return; }
+            if (tmin >= 570) {
+              console.log('仅在北京 00:00-09:30 判定（避开盘中与傍晚更新窗口，防止定时漂移误报），本次跳过');
+              return;
+            }
 
-            // (b) data.js 是否新鲜：同时检查"仓库源文件"与"线上 Pages 站点"
-            //     之前只看源文件，漏掉"源已更新但 Pages 部署静默失败"——用户看到的仍是旧的
-            let srcAsOf = '', liveAsOf = '';
+            // 期望的最新完整交易日 = 上一个工作日（周一凌晨则回溯到上周五）
+            const exp = new Date(bj.getTime());
+            exp.setUTCDate(exp.getUTCDate() - (dow === 1 ? 3 : 1));
+            const expected = exp.toISOString().slice(0, 10);
+            console.log(`expected(上一个工作日)=${expected}`);
+
+            // (a) 源 data.js 的 asof
+            let srcAsOf = '';
             try {
               const resp = await github.rest.repos.getContent({ owner, repo, path: 'data.js', ref: 'main' });
               const txt = Buffer.from(resp.data.content, 'base64').toString('utf8');
@@ -56,49 +70,81 @@ jobs:
               srcAsOf = m ? m[1] : '';
             } catch (e) { console.log('getContent(src) err: ' + e.message); }
 
-            // 线上 Pages 站点(用户浏览器实际加载) asof，带重试避免 CI 偶发网络误报
+            // (b) 线上 Pages 站点 asof（用户浏览器实际加载的），带重试
+            let liveAsOf = '';
             try {
               const liveUrl = `https://${owner}.github.io/${repo}/data.js`;
               for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
-                  const liveResp = await fetch(liveUrl, { redirect: 'follow' });
-                  if (liveResp.ok) {
-                    const txt = await liveResp.text();
+                  const r = await fetch(liveUrl, { redirect: 'follow' });
+                  if (r.ok) {
+                    const txt = await r.text();
                     const m = txt.match(/"asof"\s*:\s*"([0-9-]+)"/);
                     liveAsOf = m ? m[1] : '';
                     break;
                   }
-                  console.log(`live fetch attempt ${attempt} status ${liveResp.status}`);
+                  console.log(`live fetch attempt ${attempt} status ${r.status}`);
                 } catch (e2) { console.log(`live fetch attempt ${attempt} err: ${e2.message}`); }
                 if (attempt < 3) await new Promise(r => setTimeout(r, 3000));
               }
             } catch (e) { console.log('live fetch err: ' + e.message); }
 
-            const srcFresh = srcAsOf && srcAsOf >= cutoff;
-            const liveFresh = liveAsOf && liveAsOf >= cutoff;
-            const fresh = srcFresh && liveFresh;
-            console.log(`ranToday=${ranToday} srcAsOf=${srcAsOf} liveAsOf=${liveAsOf} fresh=${fresh}`);
-            if (ranToday && fresh) { console.log('✅ 健康：今日流水线已运行，源与线上 Pages 数据均新鲜'); return; }
+            // (c) bot 最近一次提交距今多少天 —— 用于区分"没跑"与"跑了但无新数据"
+            let lastBotDays = 999;
+            try {
+              const commits = await github.rest.repos.listCommits({ owner, repo, author: 'github-actions[bot]', per_page: 5 });
+              if (commits.data.length) {
+                lastBotDays = (now - new Date(commits.data[0].commit.committer.date)) / 86400000;
+              }
+            } catch (e) { console.log('listCommits err: ' + e.message); }
 
-            // 不健康 -> 开/更新 ci-alert issue（区分失败原因便于定位）
-            const TITLE = '⚠️ A股OBOS看板 watchdog：今日云端未正常更新';
+            console.log(`srcAsOf=${srcAsOf || '缺失'} liveAsOf=${liveAsOf || '缺失'} expected=${expected} lastBotDays=${lastBotDays.toFixed(2)}`);
+
+            // ── 判定 ───────────────────────────────────────────────────────────
+            const problems = [];
+            let alert = false;
+
+            if (!srcAsOf) {
+              problems.push(`源 data.js 的 asof 缺失，无法读取`); alert = true;
+            } else if (srcAsOf < expected) {
+              if (lastBotDays >= 1) {
+                problems.push(`数据落后：asof=${srcAsOf} < 应到交易日 ${expected}，且流水线已 ${lastBotDays.toFixed(1)} 天没有任何提交（疑似定时全部被跳过/被门卫拦截）`);
+                alert = true;
+              } else {
+                problems.push(`数据落后：asof=${srcAsOf} < 应到交易日 ${expected}，但流水线近期有提交（bot ${lastBotDays.toFixed(1)} 天前）—— 判定为节假日或数据源未发布该日K线，不告警`);
+              }
+            }
+
+            if (liveAsOf && srcAsOf && liveAsOf < srcAsOf) {
+              problems.push(`源已更新(asof=${srcAsOf})但线上 Pages 站点 asof=${liveAsOf} 未同步，疑似 GitHub Pages 部署失败`);
+              alert = true;
+            }
+            if (srcAsOf && !liveAsOf) {
+              problems.push(`线上 Pages 站点 data.js 不可达或读不到 asof（连续 3 次重试失败）`);
+              alert = true;
+            }
+
+            if (!alert) {
+              console.log('✅ 健康：数据已达应到交易日' + (problems.length ? '（有非致命提示：' + problems.join('；') + '）' : '，源与线上 Pages 均正常'));
+              return;
+            }
+
+            // ── 告警 ───────────────────────────────────────────────────────────
+            const TITLE = '⚠️ A股OBOS看板 watchdog：交易日数据未按时更新';
             const ts = new Date().toISOString();
-            const reasons = [];
-            if (!ranToday) reasons.push('流水线今日未运行(无 bot 提交)');
-            if (!srcFresh) reasons.push(`源 data.js asof=${srcAsOf || '缺失'} 不在窗口(>=${cutoff})`);
-            if (srcFresh && !liveFresh) reasons.push(`源已更新(asof=${srcAsOf})但线上 Pages 站点 asof=${liveAsOf || '缺失/不可达'} 未同步，疑似 GitHub Pages 部署失败`);
-            const body = `看门狗检测：今日(${today})云端未正常更新。\n` +
-              `- 流水线今日是否运行(有 bot 提交): ${ranToday}\n` +
-              `- 源 data.js asof: ${srcAsOf || '缺失'} (新鲜度窗口 >= ${cutoff})\n` +
-              `- 线上 Pages 站点 asof: ${liveAsOf || '缺失/不可达'}\n` +
-              `- 判定: ${reasons.join('；') || '未知'}\n` +
-              `- 若今日为非交易日/节假日可忽略本条。\n` +
-              `请检查：GitHub 定时调度是否被跳过、取数源(腾讯/东财/新浪)是否可达、main 写入权限、或 GitHub Pages 部署是否失败。`;
+            const body = `看门狗检测（北京时间 ${today} ${hm}）：\n` +
+              `- 应到交易日(上一个工作日): ${expected}\n` +
+              `- 源 data.js asof: ${srcAsOf || '缺失'}\n` +
+              `- 线上 Pages asof: ${liveAsOf || '缺失/不可达'}\n` +
+              `- bot 最近提交距今: ${lastBotDays === 999 ? '查不到' : lastBotDays.toFixed(2) + ' 天'}\n` +
+              `- 问题: ${problems.join('；')}\n\n` +
+              `排查方向：GitHub 定时调度是否被整体推迟（Actions 页面看运行分布）、取数源(腾讯/东财/新浪)是否可达、main 写入权限、GitHub Pages 部署是否失败。`;
             const existing = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'] });
             const found = existing.data.find(i => i.title === TITLE);
             if (found) {
               await github.rest.issues.createComment({ owner, repo, issue_number: found.number, body: `再次触发 @ ${ts}\n${body}` });
+              console.log('已更新既有 ci-alert issue #' + found.number);
             } else {
-              await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
+              const created = await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
+              console.log('已开 ci-alert issue #' + created.data.number);
             }
-            console.log('已开/更新 ci-alert issue');
