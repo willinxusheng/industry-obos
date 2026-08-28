@@ -13,7 +13,8 @@
 #   任一源成功即用；>2 行业取数全失败则整体中止，绝不用残缺数据覆盖线上。
 #
 # 加固（对标斐波那契四重防漏更）：
-#   ① 多时段 cron 兜底：北京 16:30/18:30/21:00/22:30 四触。
+#   ① 高频 cron 兜底：每 30 分钟一次（详见 on.schedule 注释）。因 GitHub schedule 实测
+#      延迟 9~10h 且会漂移，稀疏槽位会被推迟到凌晨并撞上盘前保护被 100% 秒杀，必须靠密度取胜。
 #   ② 取数重试：每个脚本内置重试 + 三源回退。
 #   ③ 失败可见告警：流水线失败时开/更新仓库 issue（label=ci-alert）。
 #   ④ 新鲜度门卫(基于数据交易日 asof + 盘后保护) + keep-alive：数据已含今日收盘/周末/盘前跳过；每日提交戳防 GitHub 停用定时。
@@ -24,12 +25,18 @@ on:
   # push main 即触发部署（源码更新后自动同步到 Pages）
   push:
     branches: [main]
-  # 北京时间(=UTC+8)：主 16:30=UTC08:30；兜底 18:30=UTC10:30；21:00=UTC13:00；22:30 健康检查=UTC14:30
+  # ⚠️ 关键教训（2026-08 本仓库实测，勿改回稀疏槽位）：
+  #   GitHub 的 `on: schedule` 会延迟 9~10 小时才真正执行，且延迟量还会漂移。
+  #   原先只用"北京 16:30/18:30/21:00/22:30"四个稀疏槽位，结果全部被推迟到北京时间
+  #   凌晨 02:00~08:00 才跑，正好撞上下方的"盘前保护(<16:00 跳过)"被 100% 秒杀——
+  #   查运行日志可见：Freshness gate 之后的所有步骤连续多天全部 skipped（空转），
+  #   而 run 结论仍是 success，告警永不触发。这就是"云端不每日更新"的真根因。
+  # 对策：把定时密度提高到每 30 分钟一次。如此无论延迟多少、如何漂移，北京时间
+  #   16:00 之后必定有运行落进去并取到当日收盘；其余未命中的运行会在 Freshness gate
+  #   处几秒内跳过（成本可忽略，公开仓库 Actions 分钟免费）。
   schedule:
-    - cron: "30 8 * * *"
-    - cron: "30 10 * * *"
-    - cron: "30 13 * * *"
-    - cron: "30 14 * * *"
+    - cron: "0 * * * *"
+    - cron: "30 * * * *"
   workflow_dispatch: {}   # 允许 Actions 页面手动触发，便于首跑实测与排错
 
 # Deploy-from-branch 模式只需 contents:write（提交 index.html / keep-alive）和 issues:write（告警）
@@ -63,6 +70,16 @@ jobs:
           TODAY=$(TZ=Asia/Shanghai date +%Y-%m-%d)
           DOW=$(TZ=Asia/Shanghai date +%u)   # 1=Mon .. 7=Sun
           echo "today=$TODAY dow=$DOW"
+          # ⚠️ 必须读 data.js(已发布产物)而非 data/industry_obos.json：
+          #   提交步骤只 add index.html/echarts.min.js/data.js，data/ 目录从不入库，
+          #   仓库里那份 json 是永久陈旧的快照(实测停在 2026-08-26)。若拿它判断，
+          #   "asof==今天就跳过"永远不会命中 —— 定时加密到每30分钟后，会导致每天
+          #   48 次全部走全量取数+计算(约3小时 runner 白烧)。data.js 才是线上真实状态。
+          # 记录「本次运行前的线上数据交易日」，供下游判断"是否真的取到了新数据"
+          # （节假日/数据源尚未发布当日K线时，新 asof 会等于旧 asof，此时不应判失败）
+          ASOF=$(python3 -c "import re,io; t=io.open('data.js',encoding='utf-8').read(); m=re.search(r'\"asof\"\s*:\s*\"([0-9-]+)\"', t); print(m.group(1) if m else '')" 2>/dev/null || true)
+          echo "asof_before=$ASOF"
+          echo "asof_before=$ASOF" >> "$GITHUB_OUTPUT"
           if [ "$DOW" = "6" ] || [ "$DOW" = "7" ]; then
             echo "weekend, no trading -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -74,8 +91,6 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           # 盘后：仅当数据已含今日收盘(asof==今天)才跳过；否则必更新
-          ASOF=$(python3 -c "import json;print((json.load(open('data/industry_obos.json')).get('asof','') or ''))" 2>/dev/null || true)
-          echo "asof=$ASOF"
           if [ "$ASOF" = "$TODAY" ]; then
             echo "数据已含今日($TODAY)收盘 -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -133,23 +148,42 @@ jobs:
       # 纵深防御：即使 freshness gate 任何逻辑失效，也绝不用陈旧数据覆盖线上
       - name: Assert data freshness before deploy
         if: steps.fresh.outputs.skip != 'true'
+        env:
+          ASOF_BEFORE: ${{ steps.fresh.outputs.asof_before }}
         run: |
-          python3 -c "import json,datetime,sys; a=(json.load(open('data/industry_obos.json')).get('asof','') or ''); cut=(datetime.date.today()-datetime.timedelta(days=4)).strftime('%Y-%m-%d'); print('asof='+a+' cutoff>='+cut); sys.exit(0 if (a and a>=cut) else 1)"
+          NEW=$(python3 -c "import json;print((json.load(open('data/industry_obos.json')).get('asof','') or ''))")
+          CUT=$(python3 -c "import datetime;print((datetime.date.today()-datetime.timedelta(days=4)).strftime('%Y-%m-%d'))")
+          echo "asof_new=$NEW asof_before=$ASOF_BEFORE cutoff>=$CUT"
+          # 关键：若新 asof 与运行前完全相同，说明"没有更新的交易日数据"（节假日/数据源
+          # 尚未发布当日K线）。这不是故障——放行让提交步骤自然 no-op、验收步骤跳过，
+          # 30 分钟后自动重试即可。若在此处判失败，长假(春节/国庆)期间会每天刷 48 条误报告警。
+          if [ -n "$NEW" ] && [ "$NEW" = "$ASOF_BEFORE" ]; then
+            echo "::notice::本次未取到更新的交易日数据（节假日/数据源尚未发布当日K线）。不判失败、不覆盖线上，等待下次运行自动重试。"
+            exit 0
+          fi
+          if [[ -z "$NEW" || "$NEW" < "$CUT" ]]; then
+            echo "::error::数据 asof=${NEW:-缺失} 不在新鲜度窗口(>= $CUT)，拒绝用陈旧数据覆盖线上"
+            exit 1
+          fi
+          echo "✅ 数据新鲜度断言通过 asof=$NEW"
 
       # 提交 index.html 回 main；Pages 以 Deploy from a branch 自动重新部署
       # [skip ci] 避免 workflow 递归触发，但不影响 Pages 监听 main 分支的 push 事件
       - name: Commit & push index.html to main
+        id: commit
         if: steps.fresh.outputs.skip != 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add index.html echarts.min.js data.js
           if git diff --cached --quiet; then
-            echo "index.html unchanged, skip commit"
+            echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
           else
             git commit -m "chore: daily refresh [skip ci]"
             git pull --rebase --autostash origin main || true
             git push origin main
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
             echo "✅ index.html pushed, Pages will auto-deploy from main"
           fi
 
@@ -157,7 +191,9 @@ jobs:
       # 之前只查 raw.githubusercontent(源文件)漏掉了"源已更新但 Pages 部署静默失败"这一盲区——
       # 那样用户浏览器看到的仍是旧数据，而所有门禁都绿。现补验用户实际加载的线上站点。
       - name: Verify deployed data freshness (post-push gate)
-        if: steps.fresh.outputs.skip != 'true'
+        # 仅当本次确实提交并推送了新产物才验收。若"无新数据"(节假日/数据源未发布当日K线)
+        # 而本次未提交，则跳过验收——否则会误判为部署失败并刷屏告警（定时已加密到每30分钟）。
+        if: steps.fresh.outputs.skip != 'true' && steps.commit.outputs.pushed == 'true'
         run: |
           EXPECTED=$(TZ=Asia/Shanghai date +%Y-%m-%d)
           OWNER=${GITHUB_REPOSITORY%/*}; REPO=${GITHUB_REPOSITORY#*/}
