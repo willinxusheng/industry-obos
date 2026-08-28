@@ -13,7 +13,7 @@ import numpy as np
 
 from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
                        T_FULL, VOL_WIN,
-                       W_SMOOTH, WIN, CAL_FULL_UNTIL, DEFAULT_W, FC_K, FC_MODE,
+                       W_SMOOTH, WIN, CAL_FULL_UNTIL, CAL_COVER_UNTIL, DEFAULT_W, FC_K, FC_MODE,
                        FC_MPI, FC_SEP, FWD, IC_REBAL,                        AnalogLib, COMBO_W, base_combo, base_combo_mkt,
                        regime_of, REGIME_CN,
                        expanding_quantile, future_trade_dates, ic_on_range, ma,
@@ -63,6 +63,19 @@ def quality_gate(raw, bdates, bclose):
     lag_days = (today - datetime.date.fromisoformat(bdates[-1])).days
     if lag_days > 5:
         issues.append("数据滞后 %d 天" % lag_days)
+    # [日历过期预警] 预测窗口若超出交易日历覆盖年份，future_trade_dates 只会排除周末，
+    # 真实节假日会被误当作交易日 -> 预测日期系统性错位。
+    # 这里只追加 issue(=> WARN)，绝不 FAIL —— 绝不能因日历没及时更新而阻断每日更新。
+    fc_last = ""
+    try:
+        fd = future_trade_dates(bdates[-1], HORIZON)
+        if fd:
+            fc_last = fd[-1]
+    except Exception:
+        fc_last = ""
+    if fc_last and fc_last > CAL_COVER_UNTIL:
+        issues.append("预测窗口(%s)超出交易日历覆盖(%s)：未来交易日退化为仅排除周末，会把节假日误当交易日，"
+                      "请补充 obos_core.HOLIDAYS 表" % (fc_last, CAL_COVER_UNTIL))
     # [A5] 复权口径断言: 复权序列会随未来除权事件整体重算历史 -> 历史指标不可复现(违背 PIT)
     bad_fq = sorted(k for k in fq_keys if k not in ("day", "unknown"))
     if bad_fq:
@@ -78,6 +91,8 @@ def quality_gate(raw, bdates, bclose):
         "lag_days": lag_days,
         "price_basis": "/".join(sorted(fq_keys)),
         "calendar_official_until": CAL_FULL_UNTIL,
+        "calendar_cover_until": CAL_COVER_UNTIL,
+        "forecast_last_date": fc_last,
         "issues": issues,
         "status": "PASS" if not issues else ("WARN" if cover > 0.999 and not (dup or zero_c or unsorted) else "FAIL"),
     }

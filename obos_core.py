@@ -405,6 +405,21 @@ HOLIDAYS = set(HOLIDAYS_2026) | set(HOLIDAYS_2027)
 CAL_FULL_UNTIL = "2026-12-31"
 
 
+def _cal_cover_until():
+    """日历「实际覆盖到」的年末，由 HOLIDAYS 推导。
+
+    刻意不另行硬编码：否则新增 HOLIDAYS_20XX 后若忘记同步这里，两个常量会漂移，
+    预警就会在错误的时间点触发（或永不触发）。
+    超出该年份后 future_trade_dates 只会排除周末，真实节假日会被误当作交易日。
+    """
+    if not HOLIDAYS:
+        return ""
+    return "%d-12-31" % max(int(h[:4]) for h in HOLIDAYS)
+
+
+CAL_COVER_UNTIL = _cal_cover_until()
+
+
 def future_trade_dates(last_date, n):
     d = datetime.date.fromisoformat(last_date)
     out = []
