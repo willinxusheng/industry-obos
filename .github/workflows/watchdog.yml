@@ -77,7 +77,9 @@ jobs:
               // 5 次重试 + 递增退避：网络偶发抖动不应被误判为"Pages 站点不可达"而误告警
               for (let attempt = 1; attempt <= 5; attempt++) {
                 try {
-                  const r = await fetch(liveUrl, { redirect: 'follow' });
+                  // 必须带超时：Node 的 fetch 默认无超时，站点卡住会一直挂着吃满
+                  // 整个 job 的 timeout-minutes 预算，导致这次检查静默不执行。
+                  const r = await fetch(liveUrl, { redirect: 'follow', signal: AbortSignal.timeout(20000) });
                   if (r.ok) {
                     const txt = await r.text();
                     const m = txt.match(/"asof"\s*:\s*"([0-9-]+)"/);
