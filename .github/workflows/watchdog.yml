@@ -61,14 +61,22 @@ jobs:
             const expected = exp.toISOString().slice(0, 10);
             console.log(`expected(上一个工作日)=${expected}`);
 
-            // (a) 源 data.js 的 asof
+            // (a) 源 data.js 的 asof（带重试）
+            // 教训：GitHub API 偶发失败时，早期版本会把"读不到源"直接判为"数据缺失"并告警，
+            // 造成误报（实测周一 00:51 那次：源读取失败，但线上 Pages 其实完全正常）。
             let srcAsOf = '';
-            try {
-              const resp = await github.rest.repos.getContent({ owner, repo, path: 'data.js', ref: 'main' });
-              const txt = Buffer.from(resp.data.content, 'base64').toString('utf8');
-              const m = txt.match(/"asof"\s*:\s*"([0-9-]+)"/);
-              srcAsOf = m ? m[1] : '';
-            } catch (e) { console.log('getContent(src) err: ' + e.message); }
+            for (let attempt = 1; attempt <= 3 && !srcAsOf; attempt++) {
+              try {
+                const resp = await github.rest.repos.getContent({ owner, repo, path: 'data.js', ref: 'main' });
+                const txt = Buffer.from(resp.data.content, 'base64').toString('utf8');
+                const m = txt.match(/"asof"\s*:\s*"([0-9-]+)"/);
+                srcAsOf = m ? m[1] : '';
+                if (!srcAsOf) console.log(`src attempt ${attempt}: 读到内容但未匹配到 asof`);
+              } catch (e) {
+                console.log(`src attempt ${attempt} err: ${e.message}`);
+                if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 3000));
+              }
+            }
 
             // (b) 线上 Pages 站点 asof（用户浏览器实际加载的），带重试
             let liveAsOf = '';
@@ -108,29 +116,41 @@ jobs:
             console.log(`srcAsOf=${srcAsOf || '缺失'} liveAsOf=${liveAsOf || '缺失'} expected=${expected} lastBotCommit=${lastBotCommitDate || '查不到'} (${lastBotDays === 999 ? '?' : lastBotDays.toFixed(2)} 天前)`);
 
             // ── 判定 ───────────────────────────────────────────────────────────
+            // 核心原则：**线上 Pages 才是用户实际看到的**。只要"能观测到的最新数据"
+            // 已达应到交易日，就不告警。看门狗自己读不到源(API 偶发失败)属于它自身的
+            // 故障，绝不能因此把人叫醒 —— 那正是误报的根源。
             const problems = [];
             let alert = false;
 
             // 流水线是否在「应到交易日」当天或之后仍有提交 -> 说明它活着，只是没新数据
             const ranOnOrAfterExpected = !!lastBotCommitDate && lastBotCommitDate >= expected;
-            if (!srcAsOf) {
-              problems.push(`源 data.js 的 asof 缺失，无法读取`); alert = true;
-            } else if (srcAsOf < expected) {
+            const observed = liveAsOf || srcAsOf;   // 优先以线上为准
+
+            if (!observed) {
+              problems.push(`源与线上均读不到 asof（源已重试3次、线上已重试5次），无法完成验证，请人工确认 GitHub API / 网络是否正常`);
+              alert = true;
+            } else if (observed < expected) {
               if (!ranOnOrAfterExpected) {
-                problems.push(`数据落后：asof=${srcAsOf} < 应到交易日 ${expected}，且流水线在 ${expected} 当天及之后没有任何提交（最近一次 bot 提交于 ${lastBotCommitDate || '查不到'}）→ 判定为真漏更`);
+                problems.push(`数据落后：观测 asof=${observed} < 应到交易日 ${expected}，且流水线在 ${expected} 当天及之后没有任何提交（最近 bot 提交 ${lastBotCommitDate || '查不到'}）→ 判定为真漏更`);
                 alert = true;
               } else {
-                problems.push(`数据落后：asof=${srcAsOf} < 应到交易日 ${expected}，但流水线在 ${lastBotCommitDate} 仍有提交 → 判定为节假日或数据源未发布该日K线，不告警`);
+                problems.push(`数据落后：观测 asof=${observed} < 应到交易日 ${expected}，但流水线在 ${lastBotCommitDate} 仍有提交 → 判定为节假日或数据源未发布该日K线，不告警`);
               }
             }
 
-            if (liveAsOf && srcAsOf && liveAsOf < srcAsOf) {
+            // Pages 部署滞后：源已更新，线上还停在更早的版本
+            if (srcAsOf && liveAsOf && liveAsOf < srcAsOf) {
               problems.push(`源已更新(asof=${srcAsOf})但线上 Pages 站点 asof=${liveAsOf} 未同步，疑似 GitHub Pages 部署失败`);
               alert = true;
             }
+            // 源正常但线上读不到 -> 站点可能真出问题，告警
             if (srcAsOf && !liveAsOf) {
-              problems.push(`线上 Pages 站点 data.js 不可达或读不到 asof（连续 3 次重试失败）`);
+              problems.push(`线上 Pages 站点 data.js 读不到 asof（已重试5次），但源正常(asof=${srcAsOf})，疑似 Pages 部署或访问异常`);
               alert = true;
+            }
+            // 源读不到但线上健康 -> 只提示，绝不告警（本次误报的根因）
+            if (!srcAsOf && liveAsOf) {
+              problems.push(`GitHub API 读取源 data.js 失败(已重试3次)，但线上 Pages asof=${liveAsOf} 正常 —— 属看门狗自身读取故障，不告警`);
             }
 
             if (!alert) {
