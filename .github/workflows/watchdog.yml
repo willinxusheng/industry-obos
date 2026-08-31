@@ -8,12 +8,19 @@
 # 原来只在北京 23:45 跑一次，被延迟后落到次日上午，判定时机完全错位。
 # 加密度后，必定有运行落进"北京凌晨判定窗口"。
 #
-# 为什么只在北京 00:00-09:30 判定：此时"上一个交易日"的更新窗口(16:00-24:00)
-# 已完整过去。若在傍晚判定，会因 GitHub 定时漂移（更新可能 18:40 才发生）
-# 而把"还没轮到更新"误报成"漏更"。凌晨判定 = 不会误报。
+# 判定窗口（两班，2026-09-01 起）：
+#   凌晨班 北京 00:00-09:30 —— 查"上一个工作日"是否更新（配合 GitHub schedule 兜底）
+#   深夜班 北京 22:00-24:00 —— 查"今天"是否更新（cron-job.org 23:35 外部踢进来，
+#                               数据源 17:00 前已发布当日日线，此时判定最准）
+#   其余时段跳过：盘中/傍晚是更新窗口，判定会因定时漂移把"还没轮到"误报成"漏更"。
+#
+# 自救（仿缠论 freshness-watchdog，2026-09-01 加入）：
+#   判定为真漏更时，先用内置 GITHUB_TOKEN 自动触发 daily.yml 补跑（无需 PAT，
+#   需 permissions.actions: write），再开/更新 ci-alert issue 告警。
+#   这样即使 17:05 主触发被数据源/调度坑掉，23:35 也会自动补上，当天数据必达。
 #
 # 告警分级（关键，避免节假日刷屏）：
-#   数据落后 且 bot 已 >=1 天没提交 -> 真漏更，开 ci-alert issue
+#   数据落后 且 bot 已 >=1 天没提交 -> 真漏更，先自救再开 ci-alert issue
 #   数据落后 但 bot 近期有提交     -> 流水线在跑，只是没有更新的交易日数据
 #                                    （节假日/数据源未发布当日K线），只记 notice 不告警
 name: OBOS Daily Watchdog
@@ -24,11 +31,12 @@ on:
     # 与北京时间会错位，改为在脚本里用北京时间判断周末）
     - cron: "0 * * * *"
     - cron: "30 * * * *"
-  workflow_dispatch: {}        # 允许手动触发实测
+  workflow_dispatch: {}        # 允许手动触发实测（cron-job.org 23:35 外部触发也走这里）
 
 permissions:
   contents: read
   issues: write
+  actions: write          # 落后时自动触发 daily.yml 自救（内置 GITHUB_TOKEN，无需 PAT）
 
 jobs:
   watchdog:
@@ -50,16 +58,30 @@ jobs:
             console.log(`watchdog 北京 ${today} ${hm} (dow=${dow}, tmin=${tmin})`);
 
             if (dow === 0 || dow === 6) { console.log('周末休市，跳过'); return; }
-            if (tmin >= 570) {
-              console.log('仅在北京 00:00-09:30 判定（避开盘中与傍晚更新窗口，防止定时漂移误报），本次跳过');
+            // 判定窗口分两班：
+            //   凌晨班 00:00-09:30 (tmin<570)   —— 查"上一个工作日"，GitHub schedule 兜底
+            //   深夜班 22:00-24:00 (tmin>=1320) —— 查"今天"，cron-job.org 23:35 外部踢进来，
+            //                                      落后则自动触发 daily.yml 自救，保证当天必达
+            const isMorning = tmin < 570;
+            const isNight   = tmin >= 1320;
+            if (!isMorning && !isNight) {
+              console.log(`非判定窗口(北京 ${hm}，tmin=${tmin})，本次跳过`);
               return;
             }
 
-            // 期望的最新完整交易日 = 上一个工作日（周一凌晨则回溯到上周五）
-            const exp = new Date(bj.getTime());
-            exp.setUTCDate(exp.getUTCDate() - (dow === 1 ? 3 : 1));
-            const expected = exp.toISOString().slice(0, 10);
-            console.log(`expected(上一个工作日)=${expected}`);
+            // 期望的最新完整交易日：
+            //   深夜班 -> 今天（当日收盘已发布，若线上还停在昨天 = 今天更新失败）
+            //   凌晨班 -> 上一个工作日（周一凌晨回溯到上周五）
+            let expected;
+            if (isNight) {
+              expected = today;
+              console.log(`深夜班：期望=今天(${expected})`);
+            } else {
+              const exp = new Date(bj.getTime());
+              exp.setUTCDate(exp.getUTCDate() - (dow === 1 ? 3 : 1));
+              expected = exp.toISOString().slice(0, 10);
+              console.log(`凌晨班：expected(上一个工作日)=${expected}`);
+            }
 
             // (a) 源 data.js 的 asof（带重试）
             // 教训：GitHub API 偶发失败时，早期版本会把"读不到源"直接判为"数据缺失"并告警，
@@ -158,14 +180,26 @@ jobs:
               return;
             }
 
+            // ── 自救：先自动触发 daily.yml 补跑，再告警（2026-09-01，仿缠论 freshness-watchdog）────
+            // 用内置 GITHUB_TOKEN（需文件顶部 permissions.actions: write），无需 PAT。
+            // 触发后 daily.yml 的 freshness gate 会判断：深夜/凌晨窗口 asof 落后 -> 不跳过
+            // -> 走完整取数(数据源已发布当日日线)+计算+部署，当天数据必达。
+            try {
+              await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'daily.yml', ref: 'main' });
+              console.log('✅ 已自动触发 daily.yml 补跑');
+            } catch (e) {
+              console.log('::warning::触发 daily.yml 补跑失败（GitHub 侧问题，不影响本次告警）: ' + e.message);
+            }
+
             // ── 告警 ───────────────────────────────────────────────────────────
             const TITLE = '⚠️ A股OBOS看板 watchdog：交易日数据未按时更新';
             const ts = new Date().toISOString();
             const body = `看门狗检测（北京时间 ${today} ${hm}）：\n` +
-              `- 应到交易日(上一个工作日): ${expected}\n` +
+              `- 应到交易日: ${expected}\n` +
               `- 源 data.js asof: ${srcAsOf || '缺失'}\n` +
               `- 线上 Pages asof: ${liveAsOf || '缺失/不可达'}\n` +
               `- bot 最近提交距今: ${lastBotDays === 999 ? '查不到' : lastBotDays.toFixed(2) + ' 天'}\n` +
+              `- 已自动触发 daily.yml 补跑，请留意其结果\n` +
               `- 问题: ${problems.join('；')}\n\n` +
               `排查方向：GitHub 定时调度是否被整体推迟（Actions 页面看运行分布）、取数源(腾讯/东财/新浪)是否可达、main 写入权限、GitHub Pages 部署是否失败。`;
             const existing = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'] });
