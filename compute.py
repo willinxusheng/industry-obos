@@ -561,15 +561,16 @@ def main():
             "vol_ratio": vr, "vol_state": vst, "valuation": None,
         })
 
-    # FDR (BH)
+    # FDR (BH) — 标准算法: 排序后从后往前累积 min。
+    # 原实现从前往后累积 max，方向反了，导致 q 恒等于 1.0、显著标签永不触发。
     ps = [x["p_extreme"] for x in industries]
     order = sorted(range(len(industries)), key=lambda i: ps[i])
     m = len(industries)
     q = [1.0] * m
-    prev = 0.0
-    for rank, i in enumerate(order):
-        prev = max(prev, ps[i] * m / (rank + 1))
-        q[i] = min(prev, 1.0)
+    prev = 1.0
+    for rank in range(m - 1, -1, -1):
+        prev = min(prev, ps[order[rank]] * m / (rank + 1))
+        q[order[rank]] = min(prev, 1.0)
     for i, ind in enumerate(industries):
         ind["fdr_q"] = round(q[i], 3)
         sig = "-"

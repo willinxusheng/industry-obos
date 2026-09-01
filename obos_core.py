@@ -720,7 +720,7 @@ COMBO_W_LO = 0.3      # [C2] 共识度最低时(当前状态史无前例) -> 0.3
 COMBO_W_HI = 0.7      # [C2] 共识度最高时(历史有清晰同类) -> 0.7 类比 + 0.3 持平基线
 
 
-def base_combo(S, lib, k, t, H=HORIZON, w=COMBO_W):
+def base_combo(S, lib, k, t, H=HORIZON):
     """[A6][C2] 预测组合: 类比池点位与"持平"基线按共识度自适应收缩.
 
     DM 检验显示类比池点位并不显著优于持平基线(p=0.59), 说明点位里噪声占比高.

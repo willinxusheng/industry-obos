@@ -31,11 +31,14 @@ def run(cmd, label):
 
 
 def find_node():
-    """优先用受管 node, 回退到 PATH; 找不到则跳过冒烟测试并显式告警。"""
-    managed = os.path.expanduser(
-        r"~\.workbuddy\binaries\node\versions\22.22.2\node.exe")
-    if os.path.exists(managed):
-        return managed
+    """优先用受管 node（跨平台探测），回退到 PATH；找不到则跳过冒烟测试并显式告警。"""
+    managed_candidates = [
+        os.path.expanduser(r"~\.workbuddy\binaries\node\versions\22.22.2\node.exe"),  # Windows
+        os.path.expanduser("~/.workbuddy/binaries/node/versions/22.22.2/bin/node"),   # macOS/Linux
+    ]
+    for p in managed_candidates:
+        if os.path.exists(p):
+            return p
     return shutil.which("node")
 
 
