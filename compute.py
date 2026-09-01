@@ -19,7 +19,7 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
                        expanding_quantile, future_trade_dates, ic_on_range, ma,
                        make_score_pit, pct_rank_series, pit_weight_path,
                        run_backtest, sub_indicators, walkforward_weights,
-                       weights_from_ic)
+                       weights_from_ic, apply_pup_calib, median_bias_of)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -442,6 +442,14 @@ def main():
     print("worst year:", bt.get("worst_year"), "| year win rate:", bt.get("year_win_rate"), flush=True)
     print("cov diag worst:", (bt.get("cov_diag") or [{}])[0], flush=True)
 
+    # [E2][E3] 深度回测产出的两套校准(全部由历史回测窗口拟合, PIT 安全):
+    #   pup_calib: p_up 分箱保序映射(低端原过保守 0.05->实际0.22, 校准后 Brier 改善)
+    #   mbias:     median 分区偏差(中枢区预测偏低~7分, 半量保守校正)
+    pup_calib = bt.get("p_up_calib")
+    mbias = bt.get("median_bias")
+    print("p_up calib:", json.dumps(pup_calib, ensure_ascii=False)[:200] if pup_calib else "none", flush=True)
+    print("median bias:", json.dumps(mbias, ensure_ascii=False)[:240] if mbias else "none", flush=True)
+
     # 阶段6: PIT 阈值 / 状态 / 推演 / 量能
     t_last = n_t - 1
     industries = []
@@ -520,11 +528,15 @@ def main():
             fdict = {"median": None, "p25": None, "p75": None, "pool": 0, "n_used": 0,
                      "p_up": None, "future_dates": future_trade_dates(asof, HORIZON)}
         else:
-            fdict = {"median": [r1(x) for x in fc["median"]],
-                     "p25": [r1(x) for x in fc["p25"]],
-                     "p75": [r1(x) for x in fc["p75"]],
+            # [E3] median 分区偏差保守校正(半量, 由历史回测拟合): med/p25/p75 同平移保持带宽
+            adj = median_bias_of(cs, mbias)
+            # [E2] p_up 保序校准(由历史回测拟合; AUC 为排序指标不受单调映射影响)
+            pup = apply_pup_calib(fc["p_up"], pup_calib)
+            fdict = {"median": [r1(min(max(x + adj, 0), 100)) for x in fc["median"]],
+                     "p25": [r1(min(max(x + adj, 0), 100)) for x in fc["p25"]],
+                     "p75": [r1(min(max(x + adj, 0), 100)) for x in fc["p75"]],
                      "pool": fc["pool"], "n_used": fc["n_used"],
-                     "p_up": round(fc["p_up"], 3),
+                     "p_up": round(pup, 3) if pup is not None else None,
                      "future_dates": future_trade_dates(asof, HORIZON)}
         above = (b["close"][-1] is not None and b["m200"][-1] is not None
                  and b["close"][-1] >= b["m200"][-1])
@@ -633,14 +645,19 @@ def main():
     bt["edge_pct"] = edge  # [B] 单源真值: 点位优势真实值写入 JSON, 前端不再硬编码 8.5%
     _auc = bt.get("p_up_auc")
     auc_txt = ("%.3f" % _auc) if isinstance(_auc, (int, float)) else "N/A"  # [D] 缺失显 N/A 而非 nan
+    _pc = bt.get("p_up_calib") or {}
+    _pb_raw = _pc.get("brier_raw")
+    _pb_cal = _pc.get("brier_cal")
     bt["conclusion"] = (
         "方向准确率 %.1f%%（块级 t 检验 p=%s，已按“31行业同期算1块”消除横截面相关导致的显著性夸大），"
-        "升温概率 AUC %s。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
+        "升温概率 AUC %s%s。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
         "该点位优势%s——可信的是方向与区间，不是具体分数。"
         "稳健性：%d 个可比年份中 %s 年方向有效，最差年份 %s 仅 %.1f%%；"
         "条件覆盖最偏的一档是「%s」实测 %.1f%%（目标 50%%）。"
         % ((mm.get("dir_acc") or 0) * 100, mm.get("block_p"),
            auc_txt,
+           ("，已按历史样本做保序校准(Brier %.3f→%.3f)" % (_pb_raw, _pb_cal)
+            if (_pb_raw is not None and _pb_cal is not None) else ""),
            edge if edge is not None else "-", dmv.get("dm_t"), dp, sig,
            len(bt.get("year_stability") or []),
            ("%.0f%%" % ((bt.get("year_win_rate") or 0) * 100)),

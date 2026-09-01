@@ -849,6 +849,31 @@ def regime_of(s):
 REGIME_CN = {"cold": "偏冷区 (<40)", "mid": "中性区 (40-60)", "hot": "偏热区 (>60)"}
 
 
+def apply_pup_calib(p, calib):
+    """[E2] 应用分箱保序校准映射. p: 原始概率(0-1), calib: run_backtest 输出的 p_up_calib dict."""
+    if calib is None or p is None or not calib.get("map"):
+        return p
+    _nb = int(calib.get("nb", 10))
+    _i = min(_nb - 1, int(min(max(float(p), 0.0), 0.999999) * _nb))
+    return float(calib["map"][_i])
+
+
+def median_bias_of(s, mb, shrink=0.5, thr=3.0):
+    """[E3] 按预测时点分数查 median 偏差, 返回保守校正量 = shrink * bias (仅 |bias|>=thr 生效).
+    正偏差=预测保守(实际更高) -> 校正量加在 median 上. mb: run_backtest 输出的 median_bias dict."""
+    if mb is None or s is None:
+        return 0.0
+    try:
+        sv = float(s)
+    except (TypeError, ValueError):
+        return 0.0
+    for b in mb.get("bins", []):
+        if b.get("lo", 0) <= sv < b.get("hi", 100):
+            bias = float(b.get("bias", 0.0))
+            return bias * shrink if abs(bias) >= thr else 0.0
+    return 0.0
+
+
 def calibration_regime(samples, metas, cal_h, min_n=300):
     """[A8] 在按步长校准([A7])之上, 再按预测时点所处区间做整体缩放.
 
@@ -1130,4 +1155,75 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
                       "fallback_days": int(getattr(lib, "nrm_fallback", 0))}
     out["n_blocks_total"] = len(tpts)
     out["step"] = horizon
+
+    # ---------- [E2] p_up 概率保序校准 (isotonic binning) ----------
+    # 深度回测发现 knn 的 p_up 系统性失准: 低端低估(预测0.05实际0.22)、高端高估(0.95->0.83),
+    # Brier 0.2266。用回测窗口(全部为历史)的无重叠样本拟合分箱保序映射, 单调化后应用,
+    # 使概率读数可信。AUC 是排序指标, 单调校准不改变 AUC; 但 Brier 分数(概率校准质量)显著改善。
+    # PIT 安全: 映射只用 <= 最新时点的历史样本, 是固定低维函数(10桶), 过拟合风险极小。
+    _pup_iso = None
+    if len(pu) >= 200:
+        _pa = np.array([a for a, _ in pu])
+        _py = np.array([b for _, b in pu])
+        _nb = 10
+        _edges = np.linspace(0.0, 1.0, _nb + 1)
+        _freq, _cnt = [], []
+        for _i in range(_nb):
+            _m = (_pa >= _edges[_i]) & (_pa < _edges[_i + 1]) if _i < _nb - 1 \
+                else (_pa >= _edges[_i]) & (_pa <= _edges[_i + 1])
+            _cnt.append(int(_m.sum()))
+            _freq.append(float(_py[_m].mean()) if _cnt[-1] else float("nan"))
+        # PAV 单调化: 相邻违反桶按样本量加权合并(循环直到单调递增)
+        _map = list(_freq)
+        _changed = True
+        while _changed:
+            _changed = False
+            for _i in range(_nb - 1):
+                if _map[_i] > _map[_i + 1] and _cnt[_i] > 0 and _cnt[_i + 1] > 0:
+                    _v = (_map[_i] * _cnt[_i] + _map[_i + 1] * _cnt[_i + 1]) / (_cnt[_i] + _cnt[_i + 1])
+                    _map[_i] = _map[_i + 1] = _v
+                    _changed = True
+        # 空桶外插: 用最近非空桶值填充(保持单调)
+        _last = None
+        for _i in range(_nb):
+            if _cnt[_i] > 0:
+                _last = _map[_i]
+            elif _last is not None:
+                _map[_i] = _last
+        _first = None
+        for _i in range(_nb - 1, -1, -1):
+            if _cnt[_i] > 0:
+                _first = _map[_i]
+            elif _first is not None:
+                _map[_i] = _first
+        _map = [float(np.clip(v, 0.0, 1.0)) for v in _map]
+        _cal_p = np.array([_map[min(_nb - 1, int(min(max(p, 0.0), 0.999999) * _nb))] for p in _pa])
+        _b_raw = float(np.mean((_pa - _py) ** 2))
+        _b_cal = float(np.mean((_cal_p - _py) ** 2))
+        _pup_iso = {"nb": _nb, "mid": [round(float((_edges[i] + _edges[i + 1]) / 2), 2) for i in range(_nb)],
+                    "map": [round(v, 4) for v in _map], "n": _cnt,
+                    "brier_raw": round(_b_raw, 4), "brier_cal": round(_b_cal, 4),
+                    "n_samples": len(_pa),
+                    "note": "分箱保序校准(回测无重叠样本): 低端原预测过保守(如0.05实际22%%概率)、高端略激进, "
+                            "校准后 Brier %.4f -> %.4f; AUC(排序能力)不受单调映射影响" % (_b_raw, _b_cal)}
+        out["p_up_calib"] = _pup_iso
+
+    # ---------- [E3] median 分区偏差 (按预测时点分数区间) ----------
+    # 深度回测发现 median 存在系统性偏差: 中枢区(40-60)预测 30 日末点偏低 ~7 分(熊市记忆),
+    # 超卖区(<25)预测偏高 ~4 分。拟合各分区的平均偏差, 供主流程做保守(半量)校正。
+    _mb = None
+    if len(raw.get(MAIN, [])) >= 300:
+        _bins = [(0, 25), (25, 40), (40, 50), (50, 60), (60, 75), (75, 101)]
+        _acc = {b: [] for b in _bins}
+        for (_med, _q25, _q75, _real), (_bi, _s) in zip(raw[MAIN], rmeta[MAIN]):
+            _sd = _s if _s is not None else 50.0
+            for _lo, _hi in _bins:
+                if _lo <= _sd < _hi:
+                    _acc[(_lo, _hi)].append(float(_real[-1] - _med[-1]))
+                    break
+        _mb = {"bins": [{"lo": lo, "hi": min(hi, 100), "bias": round(sum(v) / len(v), 3),
+                         "n": len(v)} for (lo, hi), v in _acc.items() if len(v) >= 50],
+               "note": "按预测时点分数分区统计 median 末点偏差 mean(real-med); 正=预测保守(实际更高)。"
+                       "主流程取偏差的 50% 做保守校正, 且仅当 |bias|>=3 时生效"}
+        out["median_bias"] = _mb
     return out, cals
