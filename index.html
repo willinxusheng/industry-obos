@@ -515,11 +515,26 @@
     var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
 
     var pu = x.forecast.p_up;
+    var calibNote = (DATA.backtest && DATA.backtest.p_up_calib)
+      ? '，已按历史样本保序校准（Brier ' + fmt(DATA.backtest.p_up_calib.brier_raw, 3) + '→' + fmt(DATA.backtest.p_up_calib.brier_cal, 3) + '）' : '';
     var puTxt = (typeof pu === 'number' && isFinite(pu))
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
-        + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
+        + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3)
+        + calibNote + '）'
       : '';
     var mth = DATA.method || {};
+    // [C4] 主推演描述跟随后端实际启用方法（后端可能自动切换到 combo_mkt，文案不得写死"组合推演"）
+    var mainDesc = mth.forecast_main || '跨行业类比推演';
+    // DM 显著性随真实 p 值动态渲染，不写死"p<0.05 显著"
+    var bt2 = DATA.backtest || {};
+    var dmv = (bt2.dm_combo_mkt_vs_persist && (bt2.main_method || 'knn') === 'combo_mkt') ? bt2.dm_combo_mkt_vs_persist
+      : (bt2.dm_combo_vs_persist || {});
+    var dmTxt = '';
+    if (dmv && typeof dmv.dm_p === 'number') {
+      dmTxt = dmv.dm_p < 0.05 ? '，Diebold-Mariano 块级检验 p=' + fmt(dmv.dm_p, 4) + ' 显著'
+        : '，Diebold-Mariano 块级检验 p=' + fmt(dmv.dm_p, 4) + ' 不显著';
+    }
+    var edgeTxt = (bt2.edge_pct != null) ? bt2.edge_pct.toFixed(1) : '-';
     document.getElementById('fcNote').innerHTML =
       '<b>动态阈值（PIT 扩张窗口）</b>：当前超买线 <b>' + fmt(x.ob_line) + '</b> / 偏热 ' + fmt(x.hot_line) +
       ' / 偏冷 ' + fmt(x.cold_line) + ' / 超卖线 <b>' + fmt(x.os_line) +
@@ -531,7 +546,7 @@
       '<b>跨行业类比推演</b>（类比池 ' + (x.forecast.pool || 0).toLocaleString() + ' 段，实用近邻 ' +
       (x.forecast.n_used || 0) + ' 段）：未来 ' + H + ' 日中位 ' + fmt(fcEnd) + '，倾向「<b>' + dirWord + '</b>」，' +
       puTxt + '；阴影为 P25-P75，已按历史覆盖率校准（系数 ×' + (mth.cal_factor || '-') +
-      '，实测覆盖率回到 50%）。主推演为<b>共识度自适应组合</b>：类比池共识高则多信类比、共识低则收敛至稳健"持平"基线；近邻选取还按波动/趋势体制匹配，偏向与当前市场体制相同的历史片段。推演的价值在方向与不确定性区间，<b>不在精确点位</b>（点位误差比"持平"基线好约 ' + (DATA.backtest && DATA.backtest.edge_pct != null ? DATA.backtest.edge_pct.toFixed(1) : '8.5') + '%，且 Diebold-Mariano 块级检验 p&lt;0.05 显著）。';
+      '），中位线另按历史分区偏差做半量校正（样本外验证：方向 +0.7pp、点位误差 -0.3 分），实测覆盖率回到 50%）。主推演为<b>' + mainDesc + '</b>：类比池共识高则多信类比、共识低则收敛至稳健"持平"基线；近邻选取还按波动/趋势体制匹配，偏向与当前市场体制相同的历史片段。推演的价值在方向与不确定性区间，<b>不在精确点位</b>（点位误差比"持平"基线好约 ' + edgeTxt + '%' + dmTxt + '）。';
 
     return {
       animationDuration: 600,
@@ -634,15 +649,21 @@
   function renderBacktest() {
     var bt = DATA.backtest || {};
     var main = bt.main_method || 'knn';
+    // 动态组装：combo_mkt 仅在数据存在且后端启用时展示（主推演切换时表格自动跟随）
     var rows = [
       ['组合推演（共识度自适应 0.3–0.7）', 'combo',
-        '本版主推演：按类比池共识度自适应收缩保号，共识高多信类比、共识低收敛持平；方向与纯类比池完全一致，压掉点位过度外推'],
+        '类比池与持平基线按共识度自适应收缩保号，共识高多信类比、共识低收敛持平；方向与纯类比池完全一致，压掉点位过度外推'],
       ['纯跨行业类比推演', 'knn', '弱有效方向信号 + 已校准不确定性区间'],
       ['持平基线', 'persist', '预测未来不变；无方向判断力，但点位误差最难打败'],
       ['均值回复基准', 'meanrev', '向历史均值回归'],
       ['动量基准（线性外推）', 'momentum', '朴素趋势外推'],
       ['随机游走基准', 'randomwalk', '噪声对照']
     ];
+    // [C4] 市场因子分解推演：仅当 combo_mkt 数据存在时加入表格（避免主推演切换后表格缺行）
+    if (bt.combo_mkt) {
+      rows.splice(1, 0, ['市场因子分解推演（β·大盘+特质）', 'combo_mkt',
+        '行业分=β·沪深300分+截距+特质残差，系统性(β·大盘)与特质(残差)分别用各自类比池推演后重构']);
+    }
     var dmb = bt.dm_vs_baseline || {};
     var html = '';
     rows.forEach(function (row) {
