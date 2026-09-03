@@ -95,6 +95,52 @@
     };
     document.head.appendChild(s);
   }
+  /* [2026-09-03] 详情图时序懒加载。
+   * 首屏数据只含标量(约 0.29MB), 时序(3.69MB)在点开详情图时才拉取 ——
+   * 首屏不必再等 5MB 下完才渲染。只有 buildDetailOption 用得到时序, 表格一列都不需要。
+   * SUB_SERIES_ASOF 用于识别"首屏新、时序旧"的缓存错拍: Pages 对两个文件的 CDN 缓存
+   * 可能不同步, 那时首屏指标与详情曲线会分属两个交易日, 比不显示更误导。 */
+  var seriesReady = false;
+  var seriesLoading = false;
+  var seriesCbs = [];
+  function seriesNote(html) {
+    var el = document.getElementById('detail');
+    if (el) el.innerHTML = '<div class="note" style="padding:24px;text-align:center">' + html + '</div>';
+  }
+  function ensureSeries(cb) {
+    if (seriesReady) { cb(); return; }
+    seriesCbs.push(cb);
+    if (seriesLoading) return;
+    seriesLoading = true;
+    var s = document.createElement('script');
+    s.src = 'sub_series.js';
+    s.onload = function () {
+      if (typeof SUB_SERIES_ASOF !== 'undefined' && SUB_SERIES_ASOF !== DATA.asof) {
+        /* 版本错拍: 不合并, 直接提示刷新——宁可不画, 也不能用旧曲线配新指标 */
+        seriesCbs.length = 0; seriesLoading = false;
+        seriesNote('数据已更新，请刷新页面后查看详情曲线。');
+        return;
+      }
+      var SE = (typeof SUB_SERIES !== 'undefined') ? SUB_SERIES : {};
+      for (var i = 0; i < INDS.length; i++) {
+        var rec = SE[INDS[i].code];
+        if (!rec) continue;
+        for (var k in rec) INDS[i][k] = rec[k];
+      }
+      if (typeof SUB_EXTRA !== 'undefined') {
+        if (SUB_EXTRA.cluster !== undefined) DATA.cluster = SUB_EXTRA.cluster;
+        if (SUB_EXTRA.breadth !== undefined) DATA.breadth = SUB_EXTRA.breadth;
+      }
+      seriesReady = true;
+      var q = seriesCbs.slice(); seriesCbs.length = 0;
+      for (var j = 0; j < q.length; j++) { try { q[j](); } catch (e) { /* 单个失败不拖垮其余 */ } }
+    };
+    s.onerror = function () {
+      seriesCbs.length = 0; seriesLoading = false;  // 允许下次点行业时重试
+      seriesNote('详情曲线数据加载失败（网络问题）。<br>上方表格数据不受影响，可刷新或稍后重试。');
+    };
+    document.head.appendChild(s);
+  }
   function makeChart(id) { var c = echarts.init(document.getElementById(id), null, { renderer: 'svg' }); charts.push(c); return c; }
   var detailChart = null;
   var DETAIL_ZOOM = { showStart: null, showEnd: null, isFull: false };
@@ -398,49 +444,7 @@
     var obS = (x.ob_series || []).slice(), osS = (x.os_series || []).slice();
     for (var q1 = 0; q1 < H; q1++) { obS.push(null); osS.push(null); }
 
-    var fcEnd = x.forecast.median ? x.forecast.median[H - 1] : null;
-    var dirWord = '-';
-    if (typeof fcEnd === 'number' && typeof lastScore === 'number') {
-      dirWord = fcEnd > lastScore + 3 ? '升温' : (fcEnd < lastScore - 3 ? '降温' : '震荡');
-    }
-
-    var vr = x.vol_ratio, vst = x.vol_state;
-    var volTxt = '量能：当前量比 ' + (typeof vr === 'number' ? vr.toFixed(2) : '-') + '（' + vst + '）'
-      + (vst === '放量' ? '，超买放量需警惕' : (vst === '缩量' ? '，超卖缩量或近底部' : '')) + '。';
-    var divTxt2 = x.divergence === 'bullish' ? '⚠️ <b style="color:#3c8168">看涨背离</b>：近期价格新低但分位未新低，下跌动能或衰竭，逆向关注。'
-      : x.divergence === 'bearish' ? '⚠️ <b style="color:#b1493f">看跌背离</b>：近期价格新高但分位未新高，上涨动能或衰竭，注意风险。'
-      : '近期无明显量价/分位背离。';
-    var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
-
-    var pu = x.forecast.p_up;
-    // [2026-09-03] p_up 已停用 isotonic 后验映射(样本外验证无一配置改善, 见 obos_core [E2] 注), 交付原始概率
-    var puTxt = (typeof pu === 'number' && isFinite(pu))
-      ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
-        + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
-      : '';
-    var mth = DATA.method || {};
-    var mainDesc = mth.forecast_main || '跨行业类比推演';
-    var bt2 = DATA.backtest || {};
-    var dmv = (bt2.dm_combo_mkt_vs_persist && (bt2.main_method || 'knn') === 'combo_mkt') ? bt2.dm_combo_mkt_vs_persist
-      : (bt2.dm_combo_vs_persist || {});
-    var dmTxt = '';
-    if (dmv && typeof dmv.dm_p === 'number') {
-      dmTxt = dmv.dm_p < 0.05 ? '，Diebold-Mariano 块级检验 p=' + fmt(dmv.dm_p, 4) + ' 显著'
-        : '，Diebold-Mariano 块级检验 p=' + fmt(dmv.dm_p, 4) + ' 不显著';
-    }
-    var edgeTxt = (bt2.edge_pct != null) ? bt2.edge_pct.toFixed(1) : '-';
-    document.getElementById('fcNote').innerHTML =
-      '<b>动态阈值（PIT 扩张窗口）</b>：当前超买线 <b>' + fmt(x.ob_line) + '</b> / 偏热 ' + fmt(x.hot_line) +
-      ' / 偏冷 ' + fmt(x.cold_line) + ' / 超卖线 <b>' + fmt(x.os_line) +
-      '</b>——四条界线全部按本细分行业自身历史分位（95/75/25/5）逐日推进算出，图中两条虚线随时间变化，' +
-      '历史上每一天只用该日及之前的分布，不含任何未来信息。' +
-      '相对强度分位（vs 沪深300）当前 <b>' + fmt(x.rs_pct_now) + '</b>（高=相对强）。' +
-      volTxt +
-      sigTxt2 + divTxt2 +
-      '<b>跨行业类比推演</b>（类比池 ' + (x.forecast.pool || 0).toLocaleString() + ' 段，实用近邻 ' +
-      (x.forecast.n_used || 0) + ' 段）：未来 ' + H + ' 日中位 ' + fmt(fcEnd) + '，倾向「<b>' + dirWord + '</b>」，' +
-      puTxt + '；阴影为 P25-P75，已按历史覆盖率校准（系数 ×' + (mth.cal_factor || '-') +
-      '，样本外滚动实测覆盖约 50%）。主推演为<b>' + mainDesc + '</b>：类比池共识高则多信类比、共识低则收敛至稳健"持平"基线；近邻选取还按波动/趋势体制匹配，偏向与当前市场体制相同的历史片段。推演的价值在方向与不确定性区间，<b>不在精确点位</b>（点位误差比"持平"基线好约 ' + edgeTxt + '%' + dmTxt + '）。';
+    /* fcNote 由 renderDetail 首屏直接渲染(renderFcNote), 这里不再重复 */
 
     return {
       animationDuration: 600,
@@ -518,6 +522,60 @@
     };
   }
 
+  /* [2026-09-03] 推演口径说明原本写在 buildDetailOption() 里, 随详情图一起渲染。
+   * 改成详情图懒加载后它就跟着等 4.6MB 时序下载完才出现 —— 而这段纯文字只吃标量,
+   * 与曲线毫无关系。抽出来单独渲染, 首屏切换行业即出, 不等图表。
+   * 唯一用到的"末值"是 x.cur_score: compute.py 里 cs = score[-1], 与原 lastScore 恒等。 */
+  function renderFcNote(x) {
+    var el = document.getElementById('fcNote');
+    if (!el) return;
+    var H = DATA.horizon;
+    var lastScore = x.cur_score;
+    var fcEnd = (x.forecast && x.forecast.median) ? x.forecast.median[H - 1] : null;
+    var dirWord = '-';
+    if (typeof fcEnd === 'number' && typeof lastScore === 'number') {
+      dirWord = fcEnd > lastScore + 3 ? '升温' : (fcEnd < lastScore - 3 ? '降温' : '震荡');
+    }
+
+    var vr = x.vol_ratio, vst = x.vol_state;
+    var volTxt = '量能：当前量比 ' + (typeof vr === 'number' ? vr.toFixed(2) : '-') + '（' + vst + '）'
+      + (vst === '放量' ? '，超买放量需警惕' : (vst === '缩量' ? '，超卖缩量或近底部' : '')) + '。';
+    var divTxt2 = x.divergence === 'bullish' ? '⚠️ <b style="color:#3c8168">看涨背离</b>：近期价格新低但分位未新低，下跌动能或衰竭，逆向关注。'
+      : x.divergence === 'bearish' ? '⚠️ <b style="color:#b1493f">看跌背离</b>：近期价格新高但分位未新高，上涨动能或衰竭，注意风险。'
+      : '近期无明显量价/分位背离。';
+    var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
+
+    var pu = x.forecast.p_up;
+    // [2026-09-03] p_up 已停用 isotonic 后验映射(样本外验证无一配置改善, 见 obos_core [E2] 注), 交付原始概率
+    var puTxt = (typeof pu === 'number' && isFinite(pu))
+      ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
+        + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
+      : '';
+    var mth = DATA.method || {};
+    var mainDesc = mth.forecast_main || '跨行业类比推演';
+    var bt2 = DATA.backtest || {};
+    var dmv = (bt2.dm_combo_mkt_vs_persist && (bt2.main_method || 'knn') === 'combo_mkt') ? bt2.dm_combo_mkt_vs_persist
+      : (bt2.dm_combo_vs_persist || {});
+    var dmTxt = '';
+    if (dmv && typeof dmv.dm_p === 'number') {
+      dmTxt = dmv.dm_p < 0.05 ? '，Diebold-Mariano 块级检验 p=' + fmt(dmv.dm_p, 4) + ' 显著'
+        : '，Diebold-Mariano 块级检验 p=' + fmt(dmv.dm_p, 4) + ' 不显著';
+    }
+    var edgeTxt = (bt2.edge_pct != null) ? bt2.edge_pct.toFixed(1) : '-';
+    el.innerHTML =
+      '<b>动态阈值（PIT 扩张窗口）</b>：当前超买线 <b>' + fmt(x.ob_line) + '</b> / 偏热 ' + fmt(x.hot_line) +
+      ' / 偏冷 ' + fmt(x.cold_line) + ' / 超卖线 <b>' + fmt(x.os_line) +
+      '</b>——四条界线全部按本细分行业自身历史分位（95/75/25/5）逐日推进算出，图中两条虚线随时间变化，' +
+      '历史上每一天只用该日及之前的分布，不含任何未来信息。' +
+      '相对强度分位（vs 沪深300）当前 <b>' + fmt(x.rs_pct_now) + '</b>（高=相对强）。' +
+      volTxt +
+      sigTxt2 + divTxt2 +
+      '<b>跨行业类比推演</b>（类比池 ' + (x.forecast.pool || 0).toLocaleString() + ' 段，实用近邻 ' +
+      (x.forecast.n_used || 0) + ' 段）：未来 ' + H + ' 日中位 ' + fmt(fcEnd) + '，倾向「<b>' + dirWord + '</b>」，' +
+      puTxt + '；阴影为 P25-P75，已按历史覆盖率校准（系数 ×' + (mth.cal_factor || '-') +
+      '，样本外滚动实测覆盖约 50%）。主推演为<b>' + mainDesc + '</b>：类比池共识高则多信类比、共识低则收敛至稳健"持平"基线；近邻选取还按波动/趋势体制匹配，偏向与当前市场体制相同的历史片段。推演的价值在方向与不确定性区间，<b>不在精确点位</b>（点位误差比"持平"基线好约 ' + edgeTxt + '%' + dmTxt + '）。';
+  }
+
   function renderDetail(code) {
     curCode = code;
     var x = null;
@@ -526,13 +584,19 @@
     document.getElementById('detailTitle').textContent = x.name + ' (' + x.sw + ' · ' + (x.parent || '-') + ') — 当前 ' + fmt(x.cur_score)
       + ' 分 · ' + stateOf(x) + (x.sig !== '-' ? ' · ' + x.sig : '');
     document.getElementById('detailTitle').style.color = stateColor(x);
-    /* 图表按需加载: echarts 未就绪时不阻塞, 先让表格/标题等纯 DOM 内容出齐 */
+    /* 推演口径说明不依赖时序, 首屏即渲染; 曲线继续后台加载 */
+    renderFcNote(x);
+    /* 图表按需加载: 时序与 echarts 都后台拉取, 先让表格/标题等纯 DOM 内容出齐。
+     * 顺序是先 ensureSeries 再 ensureEcharts —— 两者都到位才画, 但都不阻塞表格。 */
     if (!detailChart) {
-      ensureEcharts(function () {
-        if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
-        detailChart = makeChart('detail');
-        if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
-        if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+      if (!seriesReady && !seriesLoading) seriesNote('详情曲线加载中…');
+      ensureSeries(function () {
+        ensureEcharts(function () {
+          if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
+          detailChart = makeChart('detail');
+          if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
+          if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+        });
       });
     } else {
       detailChart.setOption(buildDetailOption(x), { notMerge: true });

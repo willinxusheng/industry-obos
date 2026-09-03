@@ -50,6 +50,66 @@ def _parents_js(sub_data):
     return js
 
 
+# 详情图需要的时序字段(只有点开某个行业画曲线时才用得上, 首屏表格一列都不需要)
+SUB_SERIES_KEYS = ('close', 'score', 'rs_pct', 'ob_series', 'os_series')
+# 非首屏必需的全局块: 前端 0 处引用, 但数据本身有价值(未来可能开新模块),
+# 所以不删, 只挪出首屏 —— 省 111KB, 且将来要用从懒加载文件里取一样
+SUB_EXTRA_KEYS = ('cluster', 'breadth')
+
+def _split_series(data):
+    """[2026-09-03] 把 109 个行业的时间序列从首屏数据里剥离出去。
+
+    首屏(排名表 16 列 / 摘要 / 质量门禁 / 回测)只需要标量: 当前分、状态、涨跌幅、
+    背离、推演末值等, 合计约 0.29MB; 时序是 5 条 x 1300 天 x 109 行业 = 3.69MB,
+    只有点开详情图才用得上。合在一个文件里 = 首屏必须下完 5MB 才开始渲染,
+    国内访问 Pages 时就是"看板加载不出来数据"(旭总 2026-09-03 反馈)。
+
+    data 就地删除这些键(因此必须先于 json.dumps 调用), 返回待写入的时序块。
+    """
+    series = {}
+    for x in data.get("industries", []):
+        code = x.get("code")
+        rec = {}
+        for k in SUB_SERIES_KEYS:
+            if k in x:
+                rec[k] = x.pop(k)
+        if code is None:
+            raise AssertionError("行业缺 code, 无法与时序对位")
+        series[code] = rec
+    extra = {}
+    for k in SUB_EXTRA_KEYS:
+        if k in data:
+            extra[k] = data.pop(k)
+
+    # 剥离完整性: 每个行业都必须带齐 5 条时序, 否则详情图会画出断线却不报错
+    for code, rec in series.items():
+        for k in SUB_SERIES_KEYS:
+            assert k in rec, "行业 %s 缺时序字段 %s" % (code, k)
+            assert isinstance(rec[k], list), "行业 %s 的 %s 不是数组" % (code, k)
+    return {"series": series, "extra": extra}
+
+
+def _write_series(block, asof):
+    """写 sub_series.js。带上 asof 供前端校验版本一致性。
+
+    asof 标记不是为了好看: Pages 对两个文件的 CDN 缓存可能错拍(一个命中新、一个命中旧),
+    那时首屏指标与详情曲线就是两个交易日的数据, 比不显示更误导。前端发现不一致会提示刷新。
+    """
+    js_s = json.dumps(block["series"], ensure_ascii=False).replace("</script>", "<\\/script>")
+    js_e = json.dumps(block["extra"], ensure_ascii=False).replace("</script>", "<\\/script>")
+    for nm, js in (("SUB_SERIES", js_s), ("SUB_EXTRA", js_e)):
+        assert "NaN" not in js and "Infinity" not in js, "non-finite number in " + nm
+    path = os.path.join(BASE, "sub_series.js")
+    with io.open(path, "w", encoding="utf-8") as f:
+        f.write("var SUB_SERIES_ASOF = " + json.dumps(asof) + ";\n")
+        f.write("var SUB_SERIES = " + js_s + ";\n")
+        f.write("var SUB_EXTRA = " + js_e + ";\n")
+    size = os.path.getsize(path)
+    assert size > 1000000, "sub_series.js 写入异常(过小): %d" % size
+    print("built: sub_series.js  时序 MB:", round(size / 1048576, 2),
+          "| 行业数:", len(block["series"]), "| asof:", asof)
+
+
 def main(sub_mode=False):
     tpl_file = "template_sub.html" if sub_mode else "template.html"
     app_file = "sub_app.js" if sub_mode else "app.js"
@@ -76,6 +136,9 @@ def main(sub_mode=False):
         for _k in DROP_KEYS:
             _x.pop(_k, None)
 
+    # [2026-09-03] 二级看板: 首屏数据与详情图时序分离(data 就地剥离, 返回待写入的时序块)
+    series_block = _split_series(data) if sub_mode else None
+
     # 性能优化: 不再内联 echarts(≈1MB)/数据(≈2.6MB)，改独立文件外链，
     # 浏览器可缓存，首屏 HTML 从 ~3.7MB 降至 <50KB，二次访问秒开。
     assert os.path.exists(os.path.join(BASE, "echarts.min.js")), "echarts.min.js 缺失(外链所需)"
@@ -90,7 +153,18 @@ def main(sub_mode=False):
     data_js_path = os.path.join(BASE, data_js_name)
     with io.open(data_js_path, "w", encoding="utf-8") as f:
         f.write(payload)
-    assert os.path.getsize(data_js_path) > 100000, data_js_name + " 写入异常(过小)"
+    dsize = os.path.getsize(data_js_path)
+    if sub_mode:
+        # 二级首屏必须只含标量(约 0.18MB), 时序已剥离子文件。
+        # 上界断言防回归: 谁把时序加回首屏, 这里立刻炸, 而不是悄悄拖慢用户首屏。
+        assert dsize < 700000, "sub_data.js 过大(%d 字节), 时序可能未剥离干净" % dsize
+        assert dsize > 50000, "sub_data.js 过小(%d 字节), 写入异常" % dsize
+    else:
+        assert dsize > 100000, data_js_name + " 写入异常(过小)"
+
+    # 时序写独立文件, 由前端在点开详情图时才拉取(见 sub_app.js 的 ensureSeries)
+    if series_block is not None:
+        _write_series(series_block, data.get("asof"))
 
     # [2026-09-03] echarts 不再作为首屏阻塞式外链。
     # 原来 1MB 图表库与数 MB 数据串行下载, 全部到齐才开始渲染, 期间整页白屏无提示,

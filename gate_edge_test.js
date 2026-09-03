@@ -196,6 +196,20 @@ const broken = [
   {
     name: '坏5 降级却不披露“一级指标暂不可用”', key: 'F', sync: false, par: null,
     patch: s => s.replace('if (!HAS_PAR) {', 'if (false) {')
+  },
+  {
+    /* [2026-09-03] 详情图改成懒加载后, 推演口径说明(fcNote)曾被一起关进图表回调:
+     * 用户首屏看到一段空白, 要等 4.6MB 时序 + 1MB 图表库下完才有字 —— 而这段纯文字只吃标量。
+     * 已抽出 renderFcNote() 首屏直出。这条反向用例把调用挪回 buildDetailOption 模拟回归,
+     * 在 stub 环境里 ensureSeries 不会完成, fcNote 便永不渲染, 门禁必须判红。 */
+    name: '坏6 推演口径说明挪回图表回调（首屏空白等时序）', key: 'E', sync: true, par: shufflePar,
+    patch: s => {
+      const A = '    /* 推演口径说明不依赖时序, 首屏即渲染; 曲线继续后台加载 */\n    renderFcNote(x);';
+      const B = '    /* fcNote 由 renderDetail 首屏直接渲染(renderFcNote), 这里不再重复 */\n\n    return {';
+      if (!s.includes(A) || !s.includes(B)) return s;   // 锚点失效 -> 交给下面的"未命中"分支判红
+      return s.replace(A, '    /* 回归模拟: 说明挪回图表回调, 首屏不渲染 */')
+        .replace(B, '    renderFcNote(x);\n\n    return {');
+    }
   }
 ];
 for (const b of broken) {

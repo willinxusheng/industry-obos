@@ -227,7 +227,11 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.html echarts.min.js data.js sub.html sub_data.js
+          # [2026-09-03] sub_series.js 是二级看板详情图的懒加载时序, 必须一并提交:
+          # 这里写的是显式清单而非 git add -A(避免把 data/*.json 等中间产物卷进来),
+          # 所以新增产物文件务必同步加到这里。漏加的后果很隐蔽——首屏 sub_data.js 每天更新,
+          # 而 sub_series.js 会永远停在首次推送的版本, 详情曲线与表格指标分属不同交易日。
+          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js
           if git diff --cached --quiet; then
             echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
             echo "pushed=false" >> "$GITHUB_OUTPUT"
@@ -293,6 +297,22 @@ jobs:
             exit 1
           fi
           echo "✅ 线上 Pages data.js asof=$A 已是最新($EXPECTED)"
+          # 阶段C：二级看板的懒加载时序必须与首屏同日。
+          # 首屏 sub_data.js 与详情时序 sub_series.js 是两个文件, 若其中一个没部署成功,
+          # 用户会看到"表格指标是新的、详情曲线是旧的" —— 两个交易日的数据混在一起,
+          # 比整页失败更误导。只取文件头 200 字节读 ASOF, 不下载 3.7MB 全文。
+          LIVE_SER="https://$OWNER.github.io/$REPO/sub_series.js"
+          asof_ser () { curl -fsS --max-time 20 -r 0-200 "$1" 2>/dev/null | python3 -c "import sys,re; t=sys.stdin.read(); m=re.search(r'SUB_SERIES_ASOF\s*=\s*\"([0-9-]+)\"', t); print(m.group(1) if m else '')" 2>/dev/null || true; }
+          C=""
+          for i in $(seq 1 40); do
+            C=$(asof_ser "$LIVE_SER"); [ "$C" = "$EXPECTED" ] && break
+            echo "poll live series $i/40: asof=$C"; sleep 15
+          done
+          if [ "$C" != "$EXPECTED" ]; then
+            echo "::error::线上 sub_series.js asof 未同步为 $EXPECTED（当前 $C）——首屏新、曲线旧会误导，请检查该文件是否被提交/部署"
+            exit 1
+          fi
+          echo "✅ 线上 sub_series.js asof=$C 与首屏一致"
 
       # keep-alive：记录今日已更新戳并 [skip ci] 提交，防 GitHub 因长期无活动停用定时
       - name: Keep-alive commit (prevent GitHub disabling scheduled runs)
