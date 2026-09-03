@@ -37,7 +37,18 @@ on:
   schedule:
     - cron: "0 * * * *"
     - cron: "30 * * * *"
-  workflow_dispatch: {}   # 允许 Actions 页面手动触发，便于首跑实测与排错
+  # force_rebuild: 数据已是最新时也要重跑一遍，用于「只改了前端源码、想立刻上线」。
+  #   日常不必用——push 命中前端源码时下面的 Freshness gate 会自动强制重建。
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重建产物（数据已最新时也重跑；盘中窗口仍会跳过）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 # Deploy-from-branch 模式只需 contents:write（提交 index.html / keep-alive）和 issues:write（告警）
 permissions:
@@ -60,6 +71,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # 校验「Freshness gate 自身的源码命中判定」——纯静态检查，不取数不联网。
+      # 必须放在 Freshness gate 之前且只在 push 时跑：daily.yml 自己不在前端源码清单里，
+      # 改了它不会触发强制重建，挂在 gate 之后的步骤会被 skip 掉、永远跑不到。
+      - name: Verify freshness gate logic
+        if: github.event_name == 'push'
+        run: python3 test_freshness_gate.py
+
       # ── 新鲜度门卫（始终运行）──────────────────────────────────────────────
       # 设计：基于「数据最新交易日 asof」判断，而非"今天是否跑过"戳。
       #   - 周末跳过；盘前(北京<16:00)跳过，避免把不完整盘中K线当收盘数据发布；
@@ -67,6 +85,13 @@ jobs:
       #   - 否则拉取+计算+部署。彻底消除"早次 run 误标今天→主更新被跳过"的竞态。
       - name: Freshness gate (skip if data current / weekend / intraday)
         id: fresh
+        # 用 env 传值而非在 run 里直接展开 ${{ }} —— 表达式拼接进 shell 有注入面，
+        # 虽然这几个值都是 GitHub 提供的常量，但保持零拼接的习惯更省心。
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild }}
         run: |
           # 北京时间 = UTC+8（中国无夏令时），刻意不用 TZ=Asia/Shanghai：
           # 一旦 runner 缺 tzdata，TZ 会被静默忽略、tmin 变成 UTC 口径，
@@ -96,6 +121,12 @@ jobs:
             echo "盘中/结算期($HM)，不发布不完整数据 -> skip"
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # 手动强制重建：排在盘中判断之后是有意的——"绝不发布不完整盘中K线"是铁律，
+          # force 只能绕过周末与"数据已最新"，不能绕过盘中窗口。
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "手动 force_rebuild=true（已避开盘中窗口）-> 强制重建产物"
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           # 期望的最新「完整交易日」：
           #   16:00 之后  -> 今天（当日收盘应已可取）
           #   凌晨 00:00-09:30 -> 上一个工作日（此时今日尚未开盘，最新完整数据是昨天）
@@ -109,11 +140,35 @@ jobs:
             EXPECTED=$(date -u -d "+8 hours -1 day" +%Y-%m-%d)
           fi
           echo "expected=$EXPECTED asof=$ASOF"
+          # ── 源码改动必须重建产物 ─────────────────────────────────────────────
+          # Freshness gate 原本只判"数据是否最新"，完全不管源码变没变。数据已最新时
+          # 改前端代码，产物会一直卡到下一个有新交易日的日子才上线——周末或节假日改代码
+          # 尤其明显，要等好几天。故 push 命中前端源码时强制放行：用现有数据重新 build，
+          # 不改变任何数据口径（下游 assert 对"asof 未变"的情况本就是放行不判红的）。
+          # 盘中窗口到不了这里（上面已 exit），周末才可能走到——周末重建用的是已有的
+          # 完整收盘数据，安全，只是白耗一点 runner 时间。
+          SRC_HIT=""
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ -n "$AFTER_SHA" ]; then
+            # 分支首次推送时 before 是全 0，没有 diff 基线，跳过检测即可（产物本来就是新的）
+            case "$BEFORE_SHA" in
+              0000000000000000000000000000000000000000) ;;
+              *) SRC_HIT=$(git diff --name-only "$BEFORE_SHA".."$AFTER_SHA" 2>/dev/null \
+                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html)$' || true) ;;
+            esac
+            if [ -n "$SRC_HIT" ]; then
+              echo "push 命中前端源码: $(printf '%s' "$SRC_HIT" | tr '\n' ' ')"
+            fi
+          fi
           # 注意：bash 的 [[ ]] 不支持 ">= " 字符串比较（只支持 < 和 >），
           # 故拆成 "等于 或 大于" 两个判断，等价表达 ASOF >= EXPECTED。
           if [ -n "$ASOF" ] && { [ "$ASOF" = "$EXPECTED" ] || [[ "$ASOF" > "$EXPECTED" ]]; }; then
-            echo "数据已含最新完整交易日($ASOF >= $EXPECTED) -> skip"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            if [ -n "$SRC_HIT" ]; then
+              echo "数据已最新，但前端源码有改动 -> 强制重建产物"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "数据已含最新完整交易日($ASOF >= $EXPECTED) -> skip"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
