@@ -76,6 +76,10 @@ jobs:
       # 改了它不会触发强制重建，挂在 gate 之后的步骤会被 skip 掉、永远跑不到。
       - name: Verify freshness gate logic
         if: github.event_name == 'push'
+        env:
+          # 依赖缺失时拒绝静默跳过（那会让这道门禁形同虚设还显示绿）。
+          # 实测 runner 自带 pyyaml，这里只是把"跳过了却显示成功"这条退路堵死。
+          REQUIRE_PYYAML: '1'
         run: python3 test_freshness_gate.py
 
       # ── 新鲜度门卫（始终运行）──────────────────────────────────────────────

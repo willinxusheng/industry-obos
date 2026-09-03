@@ -30,6 +30,11 @@ YML = os.path.join(BASE, '.github/workflows/daily.yml')
 try:
     import yaml
 except ImportError:
+    # 本地没装 pyyaml 时跳过是方便；但 CI 上跳过 = 门禁形同虚设还显示绿（假绿），
+    # 必须显式判红让问题可见。故由 daily.yml 传 REQUIRE_PYYAML=1 区分两种环境。
+    if os.environ.get('REQUIRE_PYYAML') == '1':
+        print('FAIL: CI 环境下 pyyaml 不可用，本门禁无法执行 —— 拒绝静默跳过')
+        sys.exit(1)
     print('SKIP: pyyaml 未安装')
     sys.exit(0)
 
