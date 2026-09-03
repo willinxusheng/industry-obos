@@ -290,7 +290,8 @@ jobs:
           # 这里写的是显式清单而非 git add -A(避免把 data/*.json 等中间产物卷进来),
           # 所以新增产物文件务必同步加到这里。漏加的后果很隐蔽——首屏 sub_data.js 每天更新,
           # 而 sub_series.js 会永远停在首次推送的版本, 详情曲线与表格指标分属不同交易日。
-          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js
+          # [2026-09-04] series.js 是主看板的同款懒加载时序(从 data.js 剥离), 同理必须提交。
+          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js
           if git diff --cached --quiet; then
             echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
             echo "pushed=false" >> "$GITHUB_OUTPUT"
@@ -356,22 +357,25 @@ jobs:
             exit 1
           fi
           echo "✅ 线上 Pages data.js asof=$A 已是最新($EXPECTED)"
-          # 阶段C：二级看板的懒加载时序必须与首屏同日。
-          # 首屏 sub_data.js 与详情时序 sub_series.js 是两个文件, 若其中一个没部署成功,
+          # 阶段C：懒加载时序必须与首屏同日（主看板 series.js + 二级 sub_series.js）。
+          # 首屏数据与详情时序是两个文件, 若其中一个没部署成功,
           # 用户会看到"表格指标是新的、详情曲线是旧的" —— 两个交易日的数据混在一起,
-          # 比整页失败更误导。只取文件头 200 字节读 ASOF, 不下载 3.7MB 全文。
-          LIVE_SER="https://$OWNER.github.io/$REPO/sub_series.js"
-          asof_ser () { curl -fsS --max-time 20 -r 0-200 "$1" 2>/dev/null | python3 -c "import sys,re; t=sys.stdin.read(); m=re.search(r'SUB_SERIES_ASOF\s*=\s*\"([0-9-]+)\"', t); print(m.group(1) if m else '')" 2>/dev/null || true; }
-          C=""
-          for i in $(seq 1 40); do
-            C=$(asof_ser "$LIVE_SER"); [ "$C" = "$EXPECTED" ] && break
-            echo "poll live series $i/40: asof=$C"; sleep 15
+          # 比整页失败更误导。只取文件头 200 字节读 ASOF, 不下载数 MB 全文。
+          # [2026-09-04] 主看板也拆出了 series.js, 两个看板的时序都要验, 故做成循环。
+          asof_ser () { curl -fsS --max-time 20 -r 0-200 "$2" 2>/dev/null | python3 -c "import sys,re; t=sys.stdin.read(); m=re.search(r'$1\s*=\s*\"([0-9-]+)\"', t); print(m.group(1) if m else '')" 2>/dev/null || true; }
+          for pair in "SERIES_ASOF:https://$OWNER.github.io/$REPO/series.js" "SUB_SERIES_ASOF:https://$OWNER.github.io/$REPO/sub_series.js"; do
+            VAR="${pair%%:*}"; URL="${pair#*:}"
+            C=""
+            for i in $(seq 1 40); do
+              C=$(asof_ser "$VAR" "$URL"); [ "$C" = "$EXPECTED" ] && break
+              echo "poll live $VAR $i/40: asof=$C"; sleep 15
+            done
+            if [ "$C" != "$EXPECTED" ]; then
+              echo "::error::线上 $URL 的 $VAR 未同步为 $EXPECTED（当前 $C）——首屏新、曲线旧会误导，请检查该文件是否被提交/部署"
+              exit 1
+            fi
+            echo "✅ 线上 $(basename "$URL") asof=$C 与首屏一致"
           done
-          if [ "$C" != "$EXPECTED" ]; then
-            echo "::error::线上 sub_series.js asof 未同步为 $EXPECTED（当前 $C）——首屏新、曲线旧会误导，请检查该文件是否被提交/部署"
-            exit 1
-          fi
-          echo "✅ 线上 sub_series.js asof=$C 与首屏一致"
 
       # keep-alive：记录今日已更新戳并 [skip ci] 提交，防 GitHub 因长期无活动停用定时
       - name: Keep-alive commit (prevent GitHub disabling scheduled runs)
@@ -409,3 +413,43 @@ jobs:
             } else {
               await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
             }
+
+  # ── jsdom 端到端门禁（独立 job，与每日刷新解耦）────────────────────────────
+  # [2026-09-04] 这两道门禁需要 npm 装 jsdom，此前一直"只在本机跑、不进 CI"，
+  #   理由是怕 npm 失败拖垮每日刷新。代价是：改了前端代码，CI 全绿，
+  #   但没有任何一道 CI 门禁真的验过 DOM —— 主看板那次拆分就是在这种
+  #   保护真空里改的（事后才发现连门禁都曾是假绿）。
+  # 改成独立 job 后两头都保住：
+  #   - 门禁真跑、真红：失败会有红叉，不会被"依赖缺失就 exit 0"悄悄放过
+  #     （下面专门加一步 require('jsdom') 预检，把这道退路堵死）
+  #   - 不阻塞刷新：update job 不 needs 它，npm 装不上也只是这个 job 变红，
+  #     取数 / 计算 / 构建 / 部署照常走完
+  # 两道门禁都从源码现场装配（模板 + 当前 app + data/*.json），
+  # 不吃 update 的产物，因此可以与 update 完全并行。
+  dom-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install jsdom
+        run: npm install jsdom --no-save --no-package-lock --no-audit --no-fund
+
+      # 门禁脚本在 jsdom 缺失时会 exit 0 跳过 —— 那会让本 job 变成"永远绿"的摆设。
+      # 这里先显式 require 一次，装不上就直接判红，不给自己留假绿的余地。
+      - name: Preflight — jsdom 必须真的装上（拒绝静默跳过）
+        run: node -e "require('jsdom'); console.log('jsdom ok:', require('jsdom/package.json').version)"
+
+      # 真实 DOM 端到端：事件委托 / 类名切换 / 两级树形逐个展开 109 个不漏
+      - name: Real-DOM end-to-end (二级看板)
+        run: node test_dom_sub.js
+
+      # 首屏不等时序：两个看板 × 404/挂起 共 4 个场景，验"用户网络差时看到什么"
+      - name: No-series first-paint contract (主看板 + 二级看板 × 404/挂起)
+        run: node test_dom_noseries.js

@@ -82,6 +82,50 @@
     };
     document.head.appendChild(s);
   }
+  /* [2026-09-04] 详情图时序懒加载（与 sub_app.js 同款机制）。
+   * 主看板 data.js 原本把 31 个行业的 5 条时序全塞进首屏，占 payload 的 97%
+   * （1071KB / 1115KB），而这 5 个字段全仓库只被 buildDetailOption 引用 ——
+   * 首屏表格、摘要、质量门禁、回测一列都不需要（已逐个函数核对过）。
+   * 剥离后 data.js 1148KB -> 78KB（-93%），时序改由 series.js 在点开行业时才拉。
+   * SERIES_ASOF 用于识别「首屏新、时序旧」的 CDN 缓存错拍：两者分属两个交易日时
+   * 宁可不画，也不能让表格指标与曲线对不上。 */
+  var seriesReady = false;
+  var seriesLoading = false;
+  var seriesCbs = [];
+  function seriesNote(html) {
+    var el = document.getElementById('detail');
+    if (el) el.innerHTML = '<div class="note" style="padding:24px;text-align:center">' + html + '</div>';
+  }
+  function ensureSeries(cb) {
+    if (seriesReady) { cb(); return; }
+    seriesCbs.push(cb);
+    if (seriesLoading) return;
+    seriesLoading = true;
+    var s = document.createElement('script');
+    s.src = 'series.js';
+    s.onload = function () {
+      if (typeof SERIES_ASOF !== 'undefined' && SERIES_ASOF !== DATA.asof) {
+        /* 版本错拍: 不合并, 直接提示刷新——宁可不画, 也不能用旧曲线配新指标 */
+        seriesCbs.length = 0; seriesLoading = false;
+        seriesNote('数据已更新，请刷新页面后查看详情曲线。');
+        return;
+      }
+      var SE = (typeof SERIES !== 'undefined') ? SERIES : {};
+      for (var i = 0; i < INDS.length; i++) {
+        var rec = SE[INDS[i].code];
+        if (!rec) continue;
+        for (var k in rec) INDS[i][k] = rec[k];
+      }
+      seriesReady = true;
+      var q = seriesCbs.slice(); seriesCbs.length = 0;
+      for (var j = 0; j < q.length; j++) { try { q[j](); } catch (e) { /* 单个失败不拖垮其余 */ } }
+    };
+    s.onerror = function () {
+      seriesCbs.length = 0; seriesLoading = false;  // 允许下次点行业时重试
+      seriesNote('详情曲线数据加载失败（网络问题）。<br>上方表格数据不受影响，可刷新或稍后重试。');
+    };
+    document.head.appendChild(s);
+  }
   function makeChart(id) { var c = echarts.init(document.getElementById(id), null, { renderer: 'svg' }); charts.push(c); return c; }
   var detailChart = null;
   /* F: dataZoom 双击复位 (契合用户偏好: 缩略条拖手柄缩放/拖窗口平移/双击复位)
@@ -381,13 +425,17 @@
     document.getElementById('detailTitle').style.color = stateColor(x);
     /* 推演口径说明不依赖图表, 首屏即渲染; 曲线继续后台加载 */
     renderFcNote(x);
-    /* 图表按需加载: echarts 未就绪时不阻塞, 先让表格/标题等纯 DOM 内容出齐 */
+    /* 图表按需加载: 时序与 echarts 都后台拉取, 先让表格/标题等纯 DOM 内容出齐。
+     * 顺序是先 ensureSeries 再 ensureEcharts —— 两者都到位才画, 但都不阻塞表格。 */
     if (!detailChart) {
-      ensureEcharts(function () {
-        if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
-        detailChart = makeChart('detail');
-        if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
-        if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+      if (!seriesReady && !seriesLoading) seriesNote('详情曲线加载中…');
+      ensureSeries(function () {
+        ensureEcharts(function () {
+          if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
+          detailChart = makeChart('detail');
+          if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
+          if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+        });
       });
     } else {
       detailChart.setOption(buildDetailOption(x), { notMerge: true });

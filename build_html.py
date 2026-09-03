@@ -54,12 +54,15 @@ def _parents_js(sub_data):
 SUB_SERIES_KEYS = ('close', 'score', 'rs_pct', 'ob_series', 'os_series')
 
 def _split_series(data):
-    """[2026-09-03] 把 109 个行业的时间序列从首屏数据里剥离出去。
+    """[2026-09-03] 把各行业的 5 条时间序列从首屏数据里剥离出去。
 
-    首屏(排名表 16 列 / 摘要 / 质量门禁 / 回测)只需要标量: 当前分、状态、涨跌幅、
-    背离、推演末值等, 合计约 0.29MB; 时序是 5 条 x 1300 天 x 109 行业 = 3.69MB,
-    只有点开详情图才用得上。合在一个文件里 = 首屏必须下完 5MB 才开始渲染,
+    首屏(排名表 / 摘要 / 质量门禁 / 回测)只需要标量: 当前分、状态、涨跌幅、
+    背离、推演末值等; 时序是 5 条 x 1300 天 x 行业数, 只有点开详情图才用得上。
+    合在一个文件里 = 首屏必须下完整个数据文件才开始渲染,
     国内访问 Pages 时就是"看板加载不出来数据"(旭总 2026-09-03 反馈)。
+
+    [2026-09-04] 主看板同样处理: 31 个行业的时序占 data.js 的 97%(1071KB/1115KB),
+    却只被 buildDetailOption 用到 —— 剥离后 data.js 1148KB -> 78KB(-93%)。
 
     data 就地删除这些键(因此必须先于 json.dumps 调用), 返回待写入的时序块。
     """
@@ -81,22 +84,24 @@ def _split_series(data):
     return series
 
 
-def _write_series(series, asof):
-    """写 sub_series.js。带上 asof 供前端校验版本一致性。
+def _write_series(series, asof, sub_mode):
+    """写时序文件（二级 sub_series.js / 主看板 series.js）。带上 asof 供前端校验版本一致性。
 
     asof 标记不是为了好看: Pages 对两个文件的 CDN 缓存可能错拍(一个命中新、一个命中旧),
     那时首屏指标与详情曲线就是两个交易日的数据, 比不显示更误导。前端发现不一致会提示刷新。
     """
+    fname = "sub_series.js" if sub_mode else "series.js"
+    var = "SUB_SERIES" if sub_mode else "SERIES"
     js_s = json.dumps(series, ensure_ascii=False).replace("</script>", "<\\/script>")
-    assert "NaN" not in js_s and "Infinity" not in js_s, "non-finite number in SUB_SERIES"
-    path = os.path.join(BASE, "sub_series.js")
+    assert "NaN" not in js_s and "Infinity" not in js_s, "non-finite number in " + var
+    path = os.path.join(BASE, fname)
     with io.open(path, "w", encoding="utf-8") as f:
-        f.write("var SUB_SERIES_ASOF = " + json.dumps(asof) + ";\n")
-        f.write("var SUB_SERIES = " + js_s + ";\n")
+        f.write("var %s_ASOF = %s;\n" % (var, json.dumps(asof)))
+        f.write("var %s = %s;\n" % (var, js_s))
     size = os.path.getsize(path)
-    assert size > 1000000, "sub_series.js 写入异常(过小): %d" % size
-    print("built: sub_series.js  时序 MB:", round(size / 1048576, 2),
-          "| 行业数:", len(series), "| asof:", asof)
+    assert size > (1000000 if sub_mode else 300000), fname + " 写入异常(过小): %d" % size
+    print("built: %s  时序 MB: %s | 行业数: %s | asof: %s"
+          % (fname, round(size / 1048576, 2), len(series), asof))
 
 
 def main(sub_mode=False):
@@ -136,8 +141,14 @@ def main(sub_mode=False):
     for _k in GLOBAL_DROP_KEYS:
         data.pop(_k, None)
 
-    # [2026-09-03] 二级看板: 首屏数据与详情图时序分离(data 就地剥离, 返回待写入的时序块)
-    series_block = _split_series(data) if sub_mode else None
+    # 同上: benchmark 块里只有 dates 被前端读走(两个 app 都是 `var DATES = DATA.benchmark.dates`),
+    # close(1300 个浮点, 约 10KB)全仓库 0 处读取 —— 沪深300 的收盘价只在 compute.py 内部
+    # 算相对强度时用得上, 算完已经落到 rs_pct 里了, 没必要再发给浏览器。
+    if isinstance(data.get("benchmark"), dict):
+        data["benchmark"].pop("close", None)
+
+    # 首屏数据与详情图时序分离(data 就地剥离, 返回待写入的时序块)
+    series_block = _split_series(data)
 
     # 性能优化: 不再内联 echarts(≈1MB)/数据(≈2.6MB)，改独立文件外链，
     # 浏览器可缓存，首屏 HTML 从 ~3.7MB 降至 <50KB，二次访问秒开。
@@ -155,16 +166,18 @@ def main(sub_mode=False):
         f.write(payload)
     dsize = os.path.getsize(data_js_path)
     if sub_mode:
-        # 二级首屏必须只含标量(约 0.18MB), 时序已剥离子文件。
+        # 二级首屏必须只含标量(约 0.22MB), 时序已剥离子文件。
         # 上界断言防回归: 谁把时序加回首屏, 这里立刻炸, 而不是悄悄拖慢用户首屏。
         assert dsize < 700000, "sub_data.js 过大(%d 字节), 时序可能未剥离干净" % dsize
         assert dsize > 50000, "sub_data.js 过小(%d 字节), 写入异常" % dsize
     else:
-        assert dsize > 100000, data_js_name + " 写入异常(过小)"
+        # [2026-09-04] 主看板同样剥离时序, 只剩标量(约 78KB, 原来 1.35MB)。
+        # 上界断言同款防回归; 下界相应下调(剥离后就是这个量级)。
+        assert dsize < 300000, "data.js 过大(%d 字节), 时序可能未剥离干净" % dsize
+        assert dsize > 30000, "data.js 过小(%d 字节), 写入异常" % dsize
 
-    # 时序写独立文件, 由前端在点开详情图时才拉取(见 sub_app.js 的 ensureSeries)
-    if series_block is not None:
-        _write_series(series_block, data.get("asof"))
+    # 时序写独立文件, 由前端在点开详情图时才拉取(见 app.js / sub_app.js 的 ensureSeries)
+    _write_series(series_block, data.get("asof"), sub_mode)
 
     # [2026-09-03] echarts 不再作为首屏阻塞式外链。
     # 原来 1MB 图表库与数 MB 数据串行下载, 全部到齐才开始渲染, 期间整页白屏无提示,
