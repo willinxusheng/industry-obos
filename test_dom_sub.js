@@ -37,15 +37,28 @@ window.echarts = {
     return { setOption() {}, resize() {}, on() {}, off() {}, getZr() { return { on() {} }; } };
   }
 };
-const DATA_RAW = fs.readFileSync(REPO + '/data/sub_obos.json', 'utf8');
+/* [2026-09-04] DATA 与 PARENTS 都取自构建产物 sub_data.js，不再读 data/sub_obos.json。
+ * 改用构建产物有两个理由：
+ *   1) data/sub_obos.json 在 .gitignore 里（data/ 由 CI 独家写盘），CI checkout
+ *      根本拿不到 —— 这道门禁一进 CI 就 ENOENT 挂掉，本地却一直是绿的。
+ *   2) 验的本来就该是"构建 → 前端"这条链路，用源数据等于绕开了构建这一环。
+ * 另注：产物里时序已被 build_html.py 剥离，所以本门禁事实上跑在"时序不在 DATA 里"
+ * 的状态下 —— 这反而是好事：哪天首屏又误用了时序字段，这里会直接渲染出
+ * undefined/NaN 被抓到（想验"时序在场"的加载路径请看 test_dom_noseries.js）。 */
+const { readVar } = require('./test_dom_common');
+const SD = fs.readFileSync(REPO + '/sub_data.js', 'utf8');
+const DATA_RAW = readVar(SD, 'DATA');
+if (!DATA_RAW) {
+  console.log('FAIL: sub_data.js 里取不到 DATA（产物结构变了？请同步本脚本）');
+  process.exit(1);
+}
 const DATA = JSON.parse(DATA_RAW);
 window.eval('var DATA = ' + DATA_RAW + ';');
-// PARENTS 直接取自构建产物 sub_data.js —— 验证的是"构建 → 前端"完整链路, 而不是另写一份抽取逻辑
+
 let parCount = 0;
 try {
-  const sd = fs.readFileSync(REPO + '/sub_data.js', 'utf8');
-  const m = sd.match(/var PARENTS = (\[[\s\S]*?\]);\s*$/m);
-  if (m) { window.eval('var PARENTS = ' + m[1] + ';'); parCount = JSON.parse(m[1]).length; }
+  const par = readVar(SD, 'PARENTS');
+  if (par) { window.eval('var PARENTS = ' + par + ';'); parCount = JSON.parse(par).length; }
   else throw new Error('no PARENTS in sub_data.js');
 } catch (e) {
   window.eval('var PARENTS = [];');

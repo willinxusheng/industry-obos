@@ -50,7 +50,7 @@ const BOARDS = [
     label: '主看板（31 个一级行业）',
     tpl: 'template.html',
     app: 'app.js',
-    dataJson: 'data/industry_obos.json',
+    builtData: 'data.js',
     page: 'index.html',
     seriesFile: 'series.js',
     /* 与 build_html.py 完全一致：主看板的 __ECHARTS__ 被替换成空注释，
@@ -66,7 +66,7 @@ const BOARDS = [
     label: '二级看板（109 个二级行业 · 两级树形）',
     tpl: 'template_sub.html',
     app: 'sub_app.js',
-    dataJson: 'data/sub_obos.json',
+    builtData: 'sub_data.js',
     page: 'sub.html',
     seriesFile: 'sub_series.js',
     echartsSlot: ECHARTS_STUB,
@@ -76,25 +76,34 @@ const BOARDS = [
   },
 ];
 
+const { readVar, seriesLeaked } = require('./test_dom_common');
+
 function assemble(cfg) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'obos-noseries-' + cfg.key + '-'));
   const tpl = fs.readFileSync(path.join(REPO, cfg.tpl), 'utf8');
   const APP = fs.readFileSync(path.join(REPO, cfg.app), 'utf8');
-  // 与 build_html.py 同款转义: 数据里若含 </script> 会提前闭合脚本标签
-  const DATA_RAW = fs.readFileSync(path.join(REPO, cfg.dataJson), 'utf8')
-    .replace(/<\/script>/g, '<\\/script>');
 
-  // 二级看板额外需要 PARENTS，取自构建产物 sub_data.js：
-  // 验的是"构建 → 前端"这条完整链路，不另写一份抽取逻辑
-  let extra = '';
-  if (cfg.key === 'sub') {
-    try {
-      const sd = fs.readFileSync(path.join(REPO, 'sub_data.js'), 'utf8');
-      const m = sd.match(/var PARENTS = (\[[\s\S]*?\]);\s*$/m);
-      if (m) extra = ';var PARENTS=' + m[1] + ';';
-    } catch (e) { /* 取不到就退化为占位，由"一级行 31 个"的断言兜住 */ }
+  /* [2026-09-04] DATA 一律取自构建产物（data.js / sub_data.js），不读 data/*.json。
+   * 两个原因，缺一不可：
+   *   1) data/sub_obos.json 在 .gitignore 里（data/ 由 CI 独家写盘），CI checkout
+   *      根本拿不到 —— 这道门禁一进 CI 就 ENOENT 挂掉，而本地一直是绿的。
+   *   2) 更要命的是：data/*.json 是源数据，时序字段是齐的。用它当输入，
+   *      "时序缺席"就只剩"文件没下载"这一层，字段却还在对象里 —— 首屏万一
+   *      误用了时序也照样渲染得出来，门禁形同虚设。
+   *      真正的"缺席"必须是构建剥离后的产物：标量在、时序不在。 */
+  const built = fs.readFileSync(path.join(REPO, cfg.builtData), 'utf8');
+  const DATA_RAW = readVar(built, 'DATA');
+  if (!DATA_RAW) {
+    console.log(`FAIL: ${cfg.builtData} 里取不到 DATA（产物结构变了？请同步本脚本）`);
+    process.exit(1);
   }
 
+  // 二级看板额外需要 PARENTS，同样取自构建产物：验的是"构建 → 前端"完整链路
+  let extra = '';
+  if (cfg.key === 'sub') {
+    const par = readVar(built, 'PARENTS');
+    if (par) extra = ';var PARENTS=' + par + ';';
+  }
   const html = tpl
     .replace('__ECHARTS__', cfg.echartsSlot)
     .replace('__DATA__', '<script>var DATA=' + DATA_RAW + extra + '</script>')
@@ -107,8 +116,8 @@ function assemble(cfg) {
     }
   }
   fs.writeFileSync(path.join(tmp, cfg.page), html);
-  // 刻意不写 cfg.seriesFile —— 本门禁要的就是它 404
-  return { tmp, html, APP };
+  // 刻意不写 cfg.seriesFile —— 本门禁要的就是它缺席
+  return { tmp, html, APP, DATA: JSON.parse(DATA_RAW) };
 }
 
 /* 时序的两种"缺席"要分开验，因为对应两种截然不同的线上故障：
@@ -159,8 +168,8 @@ function server_close(s) {
 async function runBoard(cfg, mode) {
   const hang = (mode === 'hang');
   const built = assemble(cfg);
-  const { tmp, html, APP } = built;
-  const errs = [];
+    const { tmp, html, APP, DATA } = built;
+    const errs = [];
 
   let baseUrl, hangSrv = null;
   if (hang) {
@@ -193,6 +202,12 @@ async function runBoard(cfg, mode) {
       const title = d.getElementById('detailTitle');
       const detail = d.getElementById('detail');
       const boot = d.getElementById('bootMask');
+
+      // 自检：喂进去的 DATA 必须真的是"标量在、时序不在"的剥离后产物。
+      // 若哪天 build_html.py 又把时序塞回首屏，这条先红 —— 免得本门禁在
+      // "时序其实就在手边"的状态下假装验缺席（用 data/*.json 源数据时正是如此）。
+      const leaked = seriesLeaked(DATA.industries[0]);
+      ck(leaked.length === 0, 'DATA 确已剥离时序（"缺席"才名副其实）', leaked.join(','));
 
       // 自检：装配进去的确实是当前源码，而不是某个陈旧副本
       ck(/function renderFcNote/.test(APP), `装配用的是当前 ${cfg.app} 源码（含 renderFcNote）`);

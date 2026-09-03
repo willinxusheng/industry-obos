@@ -424,14 +424,24 @@ jobs:
   #     （下面专门加一步 require('jsdom') 预检，把这道退路堵死）
   #   - 不阻塞刷新：update job 不 needs 它，npm 装不上也只是这个 job 变红，
   #     取数 / 计算 / 构建 / 部署照常走完
-  # 两道门禁都从源码现场装配（模板 + 当前 app + data/*.json），
-  # 不吃 update 的产物，因此可以与 update 完全并行。
+  # 两道门禁的输入都是"构建产物 + 当前源码"（data/*.json 在 .gitignore 里，
+  # CI checkout 拿不到），所以必须排在 update 之后，并 checkout 最新的 main
+  # —— update 提交的产物在一个新 commit 上，按触发 sha checkout 是拿不到的。
   dom-gates:
     runs-on: ubuntu-latest
+    needs: update
+    # 只在 update 成功（含"数据已最新而跳过重建"）之后跑：
+    # update 失败时产物没更新，跑下去只会拿旧产物验出一个没有意义的红。
+    if: needs.update.result == 'success'
     timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # 拉最新 main 而不是触发本次 workflow 的 sha：产物是 update 提交的，
+          # 在它之后的那个 commit 上。
+          ref: main
+          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v6
