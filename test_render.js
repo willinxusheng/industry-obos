@@ -119,7 +119,11 @@ console.log('data fields OK: industries=%d, dates=%d, quality=%s, knn.dir_acc=%s
 
 // 2) 执行 app.js (vm + DOM/echarts stub)
 function elStub() {
+  /* parentNode.removeChild 打 __removed 标记: 用于断言首屏加载态遮罩确实被移除。
+   * 若 app 渲染中途抛错, 遮罩不会被移除, 用户会永远卡在"数据加载中…"——
+   * 这种失败不会体现在任何内容断言里(内容早就渲染好了), 只能靠这条拦。 */
   return { textContent: '', innerHTML: '', style: {}, className: '', value: '',
+    parentNode: { removeChild(node) { if (node) node.__removed = true; } },
     appendChild() {}, addEventListener() {}, getAttribute() { return null; },
     querySelectorAll() { return []; } };
 }
@@ -128,7 +132,9 @@ const document = {
   getElementById(id) { return elements[id] || (elements[id] = elStub()); },
   createElement() { return elStub(); },
   querySelectorAll() { return []; },
-  addEventListener() {}
+  addEventListener() {},
+  /* [2026-09-03] echarts 改为 app 内动态注入(ensureEcharts), 会走 head.appendChild */
+  head: { appendChild() {} }
 };
 const echarts = { init() { return { setOption() {}, resize() {}, on() {}, off() {} }; } };
 const window = { addEventListener() {} };
@@ -143,6 +149,17 @@ try {
   const must = ['btBody', 'btNote', 'qBadge', 'qGrid', 'qNote', 'fcNote'];
   const miss = must.filter(k => !(k in elements));
   if (miss.length) { console.error('MISSING ELEMENT OUTPUTS:', miss.join(', ')); process.exit(1); }
+
+  /* [2026-09-03] 首屏加载态遮罩必须被移除。
+   * app 若在中途抛错(如某列字段改名), 遮罩会一直盖在页面上, 用户永远看到"数据加载中…"。
+   * 这类失败内容断言抓不到——内容早就渲染完了, 只有收尾的移除动作没跑到。 */
+  const bootMask = elements.bootMask;
+  if (!bootMask || !bootMask.__removed) {
+    console.error('bootMask not removed: app 渲染未走完, 用户会永远卡在"数据加载中…"');
+    process.exit(1);
+  }
+  console.log('bootMask removed: 首屏加载态已收尾（渲染未中途抛错）');
+
   if (!String(elements.btNote.innerHTML).includes('结论')) { console.error('btNote empty'); process.exit(1); }
 
   // v5: 质量门禁已渲染且状态一致

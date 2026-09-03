@@ -57,6 +57,31 @@
   var INDS = DATA.industries;
   var DETAIL_DEFAULT_DAYS = 250; // 详情图默认展示最近约 1 年交易日（A股约 244-250 个交易日/年）+ 推演段
   var charts = [];
+  /* [2026-09-03] echarts 改为按需注入, 不再随首屏同步阻塞加载(与 sub_app.js 同款)。
+   * 1MB 图表库与数据文件串行下载期间整页白屏无提示, 是国内访问 Pages 时
+   * "看板加载不出来数据"的直接原因。改为: 表格等纯 DOM 内容先出, 图表库后台补。 */
+  var echartsPending = [];
+  var echartsLoading = false;
+  function ensureEcharts(cb) {
+    if (typeof echarts !== 'undefined') { cb(); return; }
+    echartsPending.push(cb);
+    if (echartsLoading) return;
+    echartsLoading = true;
+    var s = document.createElement('script');
+    s.src = 'echarts.min.js';
+    s.onload = function () {
+      var q = echartsPending.slice(); echartsPending.length = 0;
+      for (var i = 0; i < q.length; i++) { try { q[i](); } catch (e) { /* 单个失败不拖垮其余 */ } }
+    };
+    s.onerror = function () {
+      echartsPending.length = 0;
+      echartsLoading = false;  // 允许下次切行业时重试
+      var el = document.getElementById('detail');
+      if (el) el.innerHTML = '<div class="note" style="padding:24px;text-align:center">'
+        + '图表库加载失败（网络问题）。上方表格数据不受影响，可刷新或稍后重试。</div>';
+    };
+    document.head.appendChild(s);
+  }
   function makeChart(id) { var c = echarts.init(document.getElementById(id), null, { renderer: 'svg' }); charts.push(c); return c; }
   var detailChart = null;
   /* F: dataZoom 双击复位 (契合用户偏好: 缩略条拖手柄缩放/拖窗口平移/双击复位)
@@ -343,8 +368,17 @@
     document.getElementById('detailTitle').textContent = x.name + ' (' + x.sw + ') — 当前 ' + fmt(x.cur_score)
       + ' 分 · ' + stateOf(x) + (x.sig !== '-' ? ' · ' + x.sig : '');
     document.getElementById('detailTitle').style.color = stateColor(x);
-    if (!detailChart) { detailChart = makeChart('detail'); if (detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom); }
-    detailChart.setOption(buildDetailOption(x), { notMerge: true });
+    /* 图表按需加载: echarts 未就绪时不阻塞, 先让表格/标题等纯 DOM 内容出齐 */
+    if (!detailChart) {
+      ensureEcharts(function () {
+        if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
+        detailChart = makeChart('detail');
+        if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
+        if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+      });
+    } else {
+      detailChart.setOption(buildDetailOption(x), { notMerge: true });
+    }
 
     var rows = document.querySelectorAll('#rankBody tr');
     for (var r = 0; r < rows.length; r++) {
@@ -449,8 +483,11 @@
 
   renderQuality();
   renderSummary();
-    renderTable();
+  renderTable();
   renderBacktest();
-          bindEvents();
+  bindEvents();
   renderDetail(curCode);
+  /* 能执行到这里 = 数据已就绪且表格已渲染。移除首屏加载态, 图表仍在后台补加载。 */
+  var _bm = document.getElementById('bootMask');
+  if (_bm && _bm.parentNode) _bm.parentNode.removeChild(_bm);
 })();

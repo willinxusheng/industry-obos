@@ -243,6 +243,30 @@
 </style>
 </head>
 <body>
+<!-- [2026-09-03] 首屏加载态。数据文件数 MB，国内访问 Pages 下载期间若整页无反馈，
+     用户无法区分"正在加载"和"页面坏了" —— 这是"看板加载不出来数据"的直接观感来源。
+     该遮罩由 app 渲染完成后移除；下面这段内联脚本不依赖数据文件，负责超时提示。 -->
+<div id="bootMask">
+  <div id="bootBox">
+    <div id="bootSpin"></div>
+    <div id="bootTxt">数据加载中…</div>
+  </div>
+</div>
+<style>
+  #bootMask{position:fixed;top:0;right:0;bottom:0;left:0;z-index:9999;background:#f7f8fa;display:flex;align-items:center;justify-content:center}
+  #bootBox{text-align:center;font:14px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#5b6b7c}
+  #bootSpin{width:26px;height:26px;margin:0 auto 12px;border:3px solid #dde3ea;border-top-color:#41617e;border-radius:50%;animation:bootspin .9s linear infinite}
+  @keyframes bootspin{to{transform:rotate(360deg)}}
+  @media (prefers-color-scheme:dark){#bootMask{background:#161a20}#bootBox{color:#9aa7b4}#bootSpin{border-color:#2a323c;border-top-color:#6f8ba8}}
+</style>
+<script>
+setTimeout(function () {
+  var t = document.getElementById('bootTxt');
+  if (!t) return;
+  t.innerHTML = '数据加载较慢（首次需下载数 MB）…'
+    + '<div style="font-size:12px;opacity:.7;margin-top:6px">若持续无响应，请检查网络或稍后刷新</div>';
+}, 8000);
+</script>
 <div class="wrap">
   <div class="hero">
     <h1>A股细分行业超买超卖看板 <span class="badge-v">申万二级 · 专业版</span><span class="accent-line"></span></h1>

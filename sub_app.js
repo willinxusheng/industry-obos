@@ -67,6 +67,34 @@
   var HAS_PAR = PARS.length > 0;
   var DETAIL_DEFAULT_DAYS = 250;
   var charts = [];
+  /* [2026-09-03] echarts 改为按需注入, 不再随首屏同步阻塞加载。
+   * 原写法把 echarts 作为首屏阻塞外链, 与数据文件串行: 1MB 图表库 + 数 MB 数据全部到齐
+   * 才开始渲染, 期间整页白屏且无任何提示 —— 国内访问 Pages 时表现就是"加载不出来数据"。
+   * (注意: 别在这里写出完整的 script 外链标签字面量, 会被 build_html.py 的反回归断言拦下)
+   * 现改为: 表格/摘要/质量门禁等纯 DOM 内容先出, 图表库后台拉取, 到位后再补图;
+   * 即便图表库加载失败, 数据部分也不受影响(而不是整页空白)。 */
+  var echartsPending = [];
+  var echartsLoading = false;
+  function ensureEcharts(cb) {
+    if (typeof echarts !== 'undefined') { cb(); return; }
+    echartsPending.push(cb);
+    if (echartsLoading) return;
+    echartsLoading = true;
+    var s = document.createElement('script');
+    s.src = 'echarts.min.js';
+    s.onload = function () {
+      var q = echartsPending.slice(); echartsPending.length = 0;
+      for (var i = 0; i < q.length; i++) { try { q[i](); } catch (e) { /* 单个失败不拖垮其余 */ } }
+    };
+    s.onerror = function () {
+      echartsPending.length = 0;
+      echartsLoading = false;  // 允许下次切行业时重试
+      var el = document.getElementById('detail');
+      if (el) el.innerHTML = '<div class="note" style="padding:24px;text-align:center">'
+        + '图表库加载失败（网络问题）。上方表格数据不受影响，可刷新或稍后重试。</div>';
+    };
+    document.head.appendChild(s);
+  }
   function makeChart(id) { var c = echarts.init(document.getElementById(id), null, { renderer: 'svg' }); charts.push(c); return c; }
   var detailChart = null;
   var DETAIL_ZOOM = { showStart: null, showEnd: null, isFull: false };
@@ -498,8 +526,17 @@
     document.getElementById('detailTitle').textContent = x.name + ' (' + x.sw + ' · ' + (x.parent || '-') + ') — 当前 ' + fmt(x.cur_score)
       + ' 分 · ' + stateOf(x) + (x.sig !== '-' ? ' · ' + x.sig : '');
     document.getElementById('detailTitle').style.color = stateColor(x);
-    if (!detailChart) { detailChart = makeChart('detail'); if (detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom); }
-    detailChart.setOption(buildDetailOption(x), { notMerge: true });
+    /* 图表按需加载: echarts 未就绪时不阻塞, 先让表格/标题等纯 DOM 内容出齐 */
+    if (!detailChart) {
+      ensureEcharts(function () {
+        if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
+        detailChart = makeChart('detail');
+        if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
+        if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+      });
+    } else {
+      detailChart.setOption(buildDetailOption(x), { notMerge: true });
+    }
 
     /* 只给二级行加/去 sel, 且用 classList 增删以保留原有的 dim(中性淡化)类——
      * 整体覆盖 className 会把 dim 一起抹掉, 中性行就不再淡化了。 */
@@ -643,4 +680,7 @@
   renderBacktest();
   bindEvents();
   renderDetail(curCode);
+  /* 能执行到这里 = 数据已就绪且表格已渲染。移除首屏加载态, 图表仍在后台补加载。 */
+  var _bm = document.getElementById('bootMask');
+  if (_bm && _bm.parentNode) _bm.parentNode.removeChild(_bm);
 })();

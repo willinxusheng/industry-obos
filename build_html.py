@@ -64,6 +64,18 @@ def main(sub_mode=False):
     with io.open(os.path.join(BASE, "data", json_file), encoding="utf-8") as f:
         data = json.load(f)
 
+    # [2026-09-03] 剔除前端从未引用的时序数组 —— 纯占体积, 直接拖慢首屏。
+    #   ma200 : 仅 compute.py 内部用于算 above_ma200(布尔标量, 已单独输出), 前端 0 处引用
+    #           —— 占 19.9KB/行业, 且是 17 位浮点垃圾(922.1242000000001)
+    #   vol   : 前端只用 vol_ratio / vol_state 两个标量, 原始成交量数组 0 处引用
+    #           —— 占 10.3KB/行业(app.js 里那个 "vol" 只是 CSS 类名 c-vol)
+    #   收益: 二级 sub_data.js 9.0MB -> 5.7MB, 主看板 data.js 2.6MB -> 1.7MB
+    #   (Pages 侧会再 gzip 约 3.6:1, 线上传输量同比减少)
+    DROP_KEYS = ('ma200', 'vol')
+    for _x in data.get("industries", []):
+        for _k in DROP_KEYS:
+            _x.pop(_k, None)
+
     # 性能优化: 不再内联 echarts(≈1MB)/数据(≈2.6MB)，改独立文件外链，
     # 浏览器可缓存，首屏 HTML 从 ~3.7MB 降至 <50KB，二次访问秒开。
     assert os.path.exists(os.path.join(BASE, "echarts.min.js")), "echarts.min.js 缺失(外链所需)"
@@ -80,12 +92,18 @@ def main(sub_mode=False):
         f.write(payload)
     assert os.path.getsize(data_js_path) > 100000, data_js_name + " 写入异常(过小)"
 
-    html = html.replace("__ECHARTS__", '<script src="echarts.min.js"></script>')
+    # [2026-09-03] echarts 不再作为首屏阻塞式外链。
+    # 原来 1MB 图表库与数 MB 数据串行下载, 全部到齐才开始渲染, 期间整页白屏无提示,
+    # 国内访问 Pages 时表现为"看板加载不出来数据"。现由 app 内 ensureEcharts() 动态注入,
+    # 表格/摘要等纯 DOM 内容先出, 图表库后台拉取, 到位后补图; 图表库失败也不影响数据。
+    html = html.replace("__ECHARTS__", "<!-- echarts 由 app 按需注入, 不阻塞首屏 -->")
     html = html.replace("__DATA__", '<script src="' + data_js_name + '"></script>')
     html = html.replace("__APPJS__", "<script>\n" + app_src + "\n</script>")
     assert "__ECHARTS__" not in html and "__DATA__" not in html and "__APPJS__" not in html
     assert "cdn.jsdelivr.net" not in html
+    # echarts.min.js 字样由内联 app 源码(ensureEcharts)带入, 非外链标签
     assert "echarts.min.js" in html and data_js_name in html, "外链引用缺失"
+    assert '<script src="echarts.min.js">' not in html, "echarts 仍为首屏阻塞外链"
 
     out = os.path.join(BASE, out_name)
     with io.open(out, "w", encoding="utf-8") as f:
