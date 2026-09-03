@@ -19,7 +19,7 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
                        expanding_quantile, future_trade_dates, ic_on_range, ma,
                        make_score_pit, pct_rank_series, pit_weight_path,
                        run_backtest, sub_indicators, walkforward_weights,
-                       weights_from_ic, apply_pup_calib, median_bias_of)
+                       weights_from_ic)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -442,9 +442,10 @@ def main():
     print("worst year:", bt.get("worst_year"), "| year win rate:", bt.get("year_win_rate"), flush=True)
     print("cov diag worst:", (bt.get("cov_diag") or [{}])[0], flush=True)
 
-    # [E2][E3] 深度回测产出的两套校准(全部由历史回测窗口拟合, PIT 安全):
-    #   pup_calib: p_up 分箱保序映射(低端原过保守 0.05->实际0.22, 校准后 Brier 改善)
-    #   mbias:     median 分区偏差(中枢区预测偏低~7分, 半量保守校正)
+    # [E2][E3] 深度回测产出的两套校准(全部由历史回测窗口拟合, PIT 安全) —— 2026-09-03 起仅诊断存档:
+    #   pup_calib: p_up 分箱保序映射. 样本外 walk-forward 验证无一配置改善 -> 交付原始 p_up.
+    #   mbias:     median 分区偏差. 样本外验证半量/全量平移均无改善(+0.34%/+2.52%) -> 交付原始 median.
+    #   读取仅用于打印存档, 不再应用于主流程交付(详见下方交付段与 obos_core.py [E2][E3] 注).
     pup_calib = bt.get("p_up_calib")
     mbias = bt.get("median_bias")
     print("p_up calib:", json.dumps(pup_calib, ensure_ascii=False)[:200] if pup_calib else "none", flush=True)
@@ -528,10 +529,12 @@ def main():
             fdict = {"median": None, "p25": None, "p75": None, "pool": 0, "n_used": 0,
                      "p_up": None, "future_dates": future_trade_dates(asof, HORIZON)}
         else:
-            # [E3] median 分区偏差保守校正(半量, 由历史回测拟合): med/p25/p75 同平移保持带宽
-            adj = median_bias_of(cs, mbias)
-            # [E2] p_up 保序校准(由历史回测拟合; AUC 为排序指标不受单调映射影响)
-            pup = apply_pup_calib(fc["p_up"], pup_calib)
+            # [E3][E2 停用(2026-09-03 样本外否决)] median 平移与 p_up isotonic 映射经 walk-forward
+            # 滚动验证均无样本外改善(median MAE 16.927->16.985 +0.34%; p_up Brier 0.2003->0.2003~0.2274),
+            # 样本内收益为拟合窗口假象 —— 偏差/概率-频率关系随市场 regime 漂移, 固定映射无法外推.
+            # 故交付原始 median 与原始 p_up(AUC 排序能力不受影响), 两表仅存档诊断供审计.
+            adj = 0.0
+            pup = fc["p_up"]
             fdict = {"median": [r1(min(max(x + adj, 0), 100)) for x in fc["median"]],
                      "p25": [r1(min(max(x + adj, 0), 100)) for x in fc["p25"]],
                      "p75": [r1(min(max(x + adj, 0), 100)) for x in fc["p75"]],
@@ -648,7 +651,8 @@ def main():
     auc_txt = ("%.3f" % _auc) if isinstance(_auc, (int, float)) else "N/A"  # [D] 缺失显 N/A 而非 nan
     _pc = bt.get("p_up_calib") or {}
     _pb_raw = _pc.get("brier_raw")
-    _pb_cal = _pc.get("brier_cal")
+    # [2026-09-03] 不再声称"已保序校准(Brier x->y)": isotonic 映射样本外无改善(见 obos_core [E2] 注),
+    # 交付为原始概率. Brier raw 若可得则如实披露, 便于读者判断概率校准质量.
     bt["conclusion"] = (
         "方向准确率 %.1f%%（块级 t 检验 p=%s，已按“31行业同期算1块”消除横截面相关导致的显著性夸大），"
         "升温概率 AUC %s%s。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
@@ -657,8 +661,8 @@ def main():
         "条件覆盖最偏的一档是「%s」实测 %.1f%%（目标 50%%）。"
         % ((mm.get("dir_acc") or 0) * 100, mm.get("block_p"),
            auc_txt,
-           ("，已按历史样本做保序校准(Brier %.3f→%.3f)" % (_pb_raw, _pb_cal)
-            if (_pb_raw is not None and _pb_cal is not None) else ""),
+           (", Brier %.3f（概率未做后验映射，样本外验证无改善）" % _pb_raw
+            if _pb_raw is not None else ""),
            edge if edge is not None else "-", dmv.get("dm_t"), dp, sig,
            len(bt.get("year_stability") or []),
            ("%.0f%%" % ((bt.get("year_win_rate") or 0) * 100)),

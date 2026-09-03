@@ -34,7 +34,14 @@ FC_MPI = 4           # 每行业最多贡献近邻数
 FC_MODE = "delta"    # 'abs' | 'delta' | 'mix'
 FC_VEL_W = float(os.environ.get("FC_VEL_W", "0.0"))  # [C8] 速度(动量)维度权重; 默认关闭——实测加入后方向准确率65.7→64.7%、DM p=0.0437→0.1019(转不显著). OBOS为均值回复序列, 速度维度使类比追势, 与回复目标相反, 故关闭. 保留开关供未来带外生数据复测.
 STRETCH_L = 60       # [C11] 拉伸度(回复压力)特征的后窥窗口(交易日, ~3月); PIT: 仅用 e 及之前
-FC_STRETCH_W = float(os.environ.get("FC_STRETCH_W", "0.0"))  # [C11] 拉伸度(回复压力)维度权重; 默认关闭待受控实验验证. 这是被[C8]速度维度否决后的"对偶"特征: 速度=运动趋势(追势, 对均值回复有害), 拉伸=相对自身后窥均值的偏离幅度(回复势能, 与均值回复一致). 两者正交.
+# [C11] 拉伸度(回复压力)维度权重. 2026-09-03 受控实验(1300日x31行业, asof=09-02, 无重叠回测+块级DM)启用:
+#   W=0.0(原) -> 0.3 -> 0.6 -> 1.0: combo 方向 67.3% -> 67.8% -> 68.5% -> 69.2%;
+#   DM vs 持平 p=0.0032 -> 0.0028 -> 0.0021 -> 0.0021; AUC 0.757 -> 0.761; MAE 16.73 -> 16.69.
+#   最大收益在中性区(40-60): 方向 49.8%(≈随机) -> 55.3%(W=0.6), 补上中枢区缺失的方向信号.
+#   取 0.6 而非 1.0: 更高权重下 2022 年(n仅60=2块)方向掉至 56.7%, 小样本噪声大, 0.6 更稳健.
+#   这是被[C8]速度维度否决后的"对偶"特征: 速度=运动趋势(追势, 对均值回复有害),
+#   拉伸=相对自身后窥均值的偏离幅度(回复势能, 与均值回复一致). 两者正交.
+FC_STRETCH_W = float(os.environ.get("FC_STRETCH_W", "0.6"))
 
 # PIT 阈值
 PIT_MIN_N = 500
@@ -1145,7 +1152,9 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
             "n": len(aes),
         })
     out["year_stability"] = ystab
-    ok_y = [r for r in ystab if r["dir_acc"] is not None and r["n_blocks"] >= 2]
+    # [2026-09-03] "最差年份"可比性门槛: 仅 2 块(60样本)的年份方向波动 ±10pp 是纯噪声,
+    # 让它主导"最差年份"叙述会误导(实测 2022 仅 2 块). 要求 >=6 块(约半年)才进入比较.
+    ok_y = [r for r in ystab if r["dir_acc"] is not None and r["n_blocks"] >= 6]
     if ok_y:
         w = min(ok_y, key=lambda r: r["dir_acc"])
         out["worst_year"] = {"year": w["year"], "dir_acc": w["dir_acc"], "n_blocks": w["n_blocks"]}
@@ -1161,6 +1170,11 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
     # Brier 0.2266。用回测窗口(全部为历史)的无重叠样本拟合分箱保序映射, 单调化后应用,
     # 使概率读数可信。AUC 是排序指标, 单调校准不改变 AUC; 但 Brier 分数(概率校准质量)显著改善。
     # PIT 安全: 映射只用 <= 最新时点的历史样本, 是固定低维函数(10桶), 过拟合风险极小。
+    # [2026-09-03 样本外否决] walk-forward 滚动验证(验证块12+ n=589, fit 最近5/8/13/全部块 x
+    # shrink 0.5/1.0)显示: isotonic 映射应用后 Brier 无一配置改善(raw 0.2003 -> 0.2003~0.2274,
+    # 最佳仅打平), 一次性前拟后验同样恶化 27.9% —— 概率-频率关系非平稳(随市场 regime 漂移),
+    # 固定映射的样本内收益(Brier 0.202->0.199)是拟合窗口假象. 故 compute.py 已停用映射应用,
+    # 交付原始 p_up(AUC 排序能力无损); 本表仅存档诊断供审计.
     _pup_iso = None
     if len(pu) >= 200:
         _pa = np.array([a for a, _ in pu])
@@ -1204,13 +1218,18 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
                     "map": [round(v, 4) for v in _map], "n": _cnt,
                     "brier_raw": round(_b_raw, 4), "brier_cal": round(_b_cal, 4),
                     "n_samples": len(_pa),
-                    "note": "分箱保序校准(回测无重叠样本): 低端原预测过保守(如0.05实际22%%概率)、高端略激进, "
-                            "校准后 Brier %.4f -> %.4f; AUC(排序能力)不受单调映射影响" % (_b_raw, _b_cal)}
+                    "note": "诊断存档(compute.py 已停用应用, 见上注): 分箱保序映射样本内 Brier %.4f -> %.4f, "
+                            "但 walk-forward 样本外无一配置改善(raw 0.2003 起), 概率-频率关系非平稳无法外推; "
+                            "AUC(排序能力)不受单调映射影响" % (_b_raw, _b_cal)}
         out["p_up_calib"] = _pup_iso
 
     # ---------- [E3] median 分区偏差 (按预测时点分数区间) ----------
     # 深度回测发现 median 存在系统性偏差: 中枢区(40-60)预测 30 日末点偏低 ~7 分(熊市记忆),
     # 超卖区(<25)预测偏高 ~4 分。拟合各分区的平均偏差, 供主流程做保守(半量)校正。
+    # [2026-09-03 样本外否决] walk-forward 验证(验证块12+): 前拟合半量/全量校正应用后 MAE
+    # 无改善甚至恶化(raw 16.927 -> 半量 16.985 +0.34% / 全量 17.353 +2.52%; 样本内 15.423 的
+    # "改善 8.9%"为拟合窗口假象). 偏差随 regime 漂移, 固定平移无法外推. 故 compute.py 已停用
+    # median 平移, 交付原始 median; 本表仅存档诊断供审计.
     _mb = None
     if len(raw.get(MAIN, [])) >= 300:
         _bins = [(0, 25), (25, 40), (40, 50), (50, 60), (60, 75), (75, 101)]
@@ -1223,7 +1242,8 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
                     break
         _mb = {"bins": [{"lo": lo, "hi": min(hi, 100), "bias": round(sum(v) / len(v), 3),
                          "n": len(v)} for (lo, hi), v in _acc.items() if len(v) >= 50],
-               "note": "按预测时点分数分区统计 median 末点偏差 mean(real-med); 正=预测保守(实际更高)。"
-                       "主流程取偏差的 50% 做保守校正, 且仅当 |bias|>=3 时生效"}
+               "note": "诊断存档(compute.py 已停用应用): 按预测时点分数分区统计 median 末点偏差 mean(real-med); "
+                       "正=预测保守(实际更高). 样本外验证半量/全量平移均无改善(MAE +0.34%/+2.52%), 偏差随 regime "
+                       "漂移, 固定平移无法外推, 故不再交付校正值"}
         out["median_bias"] = _mb
     return out, cals

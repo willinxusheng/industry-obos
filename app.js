@@ -225,12 +225,11 @@
     var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
 
     var pu = x.forecast.p_up;
-    var calibNote = (DATA.backtest && DATA.backtest.p_up_calib)
-      ? '，已按历史样本保序校准（Brier ' + fmt(DATA.backtest.p_up_calib.brier_raw, 3) + '→' + fmt(DATA.backtest.p_up_calib.brier_cal, 3) + '）' : '';
+    // [2026-09-03] p_up 已停用 isotonic 后验映射(样本外验证无一配置改善, 见 obos_core [E2] 注),
+    // 交付原始概率 —— 故不再标注"已按历史样本保序校准 Brier x→y"。
     var puTxt = (typeof pu === 'number' && isFinite(pu))
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
-        + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3)
-        + calibNote + '）'
+        + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
       : '';
     var mth = DATA.method || {};
     // [C4] 主推演描述跟随后端实际启用方法（后端可能自动切换到 combo_mkt，文案不得写死"组合推演"）
@@ -256,7 +255,7 @@
       '<b>跨行业类比推演</b>（类比池 ' + (x.forecast.pool || 0).toLocaleString() + ' 段，实用近邻 ' +
       (x.forecast.n_used || 0) + ' 段）：未来 ' + H + ' 日中位 ' + fmt(fcEnd) + '，倾向「<b>' + dirWord + '</b>」，' +
       puTxt + '；阴影为 P25-P75，已按历史覆盖率校准（系数 ×' + (mth.cal_factor || '-') +
-      '），中位线另按历史分区偏差做半量校正（样本外验证：方向 +0.7pp、点位误差 -0.3 分），实测覆盖率回到 50%）。主推演为<b>' + mainDesc + '</b>：类比池共识高则多信类比、共识低则收敛至稳健"持平"基线；近邻选取还按波动/趋势体制匹配，偏向与当前市场体制相同的历史片段。推演的价值在方向与不确定性区间，<b>不在精确点位</b>（点位误差比"持平"基线好约 ' + edgeTxt + '%' + dmTxt + '）。';
+      '，样本外滚动实测覆盖约 50%）。主推演为<b>' + mainDesc + '</b>：类比池共识高则多信类比、共识低则收敛至稳健"持平"基线；近邻选取还按波动/趋势体制匹配，偏向与当前市场体制相同的历史片段。推演的价值在方向与不确定性区间，<b>不在精确点位</b>（点位误差比"持平"基线好约 ' + edgeTxt + '%' + dmTxt + '）。';
 
     return {
       animationDuration: 600,
