@@ -105,21 +105,25 @@
   .qin::placeholder { color: #a7b0ba; }
   #tNote { margin-bottom: 10px; }
 
-  /* ---------- 分组热力条: 每行一个申万一级, 行内嵌该组二级格子 ---------- */
-  .heat { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 20px; }
-  .hrow { display: flex; align-items: center; gap: 9px; min-width: 0; transition: opacity .2s var(--ease); }
-  .hrow.dim { opacity: .24; }
-  .hlab { flex: 0 0 78px; font-size: 12px; color: var(--ink-2); text-align: right; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; }
-  .hlab .hn { color: var(--sub); font-size: 10.5px; margin-left: 4px; }
-  .hbar { flex: 1; min-width: 0; display: flex; gap: 3px; overflow: hidden; }
-  .hcell { flex: 1 1 0; min-width: 42px; height: 26px; border-radius: 6px; color: #fff;
-    font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center;
-    padding: 0 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-    box-shadow: 0 1px 2px rgba(33,43,54,.14);
-    transition: transform .15s var(--ease), box-shadow .15s var(--ease); }
-  .hcell:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(33,43,54,.22); z-index: 2; }
-  .hcell.sel { box-shadow: 0 0 0 2px var(--ink), 0 2px 8px rgba(33,43,54,.2); }
+  /* ---------- 两级可展开行: 一级行(rowgrp) + 其下属二级行(rowsub) ----------
+     层级靠背景色与缩进区分, 故取消斑马纹(展开后行号奇偶会跨层级, 斑马纹反而乱) */
+  tr.rowgrp td { background: rgba(244,246,249,.72); border-bottom: 1px solid #e7eaee; }
+  tr.rowgrp { cursor: pointer; }
+  tr.rowgrp:hover td { background: rgba(65,97,126,.10); }
+  tr.rowgrp.open td { background: rgba(65,97,126,.06); }
+  tr.rowgrp .arw { display: inline-block; width: 13px; color: var(--sub); font-size: 10px; }
+  tr.rowgrp .c-name b { font-weight: 600; }
+  .cnt { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+    background: #e9edf1; color: var(--sub); font-size: 10.5px; font-weight: 600; }
+  .miniwrap { display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: middle; }
+  .mini { width: 13px; height: 9px; border-radius: 2px; display: inline-block; }
+  tr.rowsub td { font-size: 11.5px; }
+  tr.rowsub .c-name { padding-left: 26px; }
+  tr.rowsub { cursor: pointer; }
+  tr.rowsub:hover td { background: rgba(65,97,126,.07); }
+  /* 中性的二级行业淡化而非隐藏: 点开了就是要看全部, 只是降低视觉权重 */
+  tr.rowsub.dim td { opacity: .45; }
+  tr.rowsub.dim:hover td { opacity: 1; }
 
   table { width: 100%; border-collapse: separate; border-spacing: 0;
     font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -130,12 +134,10 @@
   td.lft, th.lft { text-align: left; }
   td.rank { color: var(--sub); }
   td.c-parent { color: var(--sub); font-size: 11px; }
-  tbody tr { transition: background .18s ease; }
-  tbody tr:nth-child(even) td { background: #fafbfc; }
-  tr.rowclk { cursor: pointer; }
-  tr.rowclk:hover td { background: rgba(65,97,126,.07); }
-  tr.sel td { background: rgba(65,97,126,.12) !important; }
-  tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--blue); }
+  tbody tr { transition: background .18s ease, opacity .18s ease; }
+  /* 选中的二级行: 左侧竖条 + 行底色(仅二级行可选中, 一级行只负责展开/收起) */
+  tr.rowsub.sel td { background: rgba(65,97,126,.12) !important; }
+  tr.rowsub.sel td:first-child { box-shadow: inset 3px 0 0 var(--blue); }
 
   .chip { display: inline-block; min-width: 36px; padding: 3px 10px; border-radius: 999px;
     color: #fff; font-size: 11px; font-weight: 600; text-align: center; letter-spacing: .3px;
@@ -175,7 +177,6 @@
     .hero h1 { font-size: 18px; }
     .wrap { padding: 14px 10px 40px; }
     .card { padding: 14px 14px; }
-    .heat { grid-template-columns: minmax(0, 1fr); }
   }
 
   @media (max-width: 640px) {
@@ -191,19 +192,23 @@
     .metric { padding: 11px 12px; border-radius: 11px; }
     .metric .v { font-size: 18px; }
     .metric .v[style*="15px"] { font-size: 13px !important; }
-    .hlab { flex-basis: 64px; font-size: 11px; }
-    .hcell { height: 24px; font-size: 10px; min-width: 34px; }
     .qin { margin-left: 0; width: 100%; min-width: 0; }
 
     .twrap { max-height: none; border-radius: 8px; -webkit-overflow-scrolling: touch; }
     table { font-size: 11px; }
     th, td { padding: 8px 8px; }
-    .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr, .c-div { display: none; }
+    /* 背离列绝不在窄屏隐藏: 它是动能转向的早期信号, 藏起来等于没有。
+       可以让路的是涨跌幅这类"锦上添花"的列。 */
+    .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr { display: none; }
+    .miniwrap { display: none; }
     th.c-name, td.c-name { position: sticky; left: 0; z-index: 2;
       background: #fff; box-shadow: 1px 0 0 var(--line); }
     thead th.c-name { background: rgba(244,246,249,.98); }
-    tbody tr:nth-child(even) td.c-name { background: #fafbfc; }
-    tr.sel td.c-name { background: rgba(65,97,126,.12) !important; }
+    tr.rowgrp td.c-name { background: rgba(244,246,249,.98); }
+    tr.rowgrp:hover td.c-name { background: rgba(65,97,126,.14); }
+    tr.rowgrp.open td.c-name { background: rgba(65,97,126,.10); }
+    tr.rowsub.sel td.c-name { background: rgba(65,97,126,.12) !important; }
+    tr.rowsub .c-name { padding-left: 18px; }
 
     .bt th, .bt td { padding: 7px 7px; font-size: 11px; }
     .bt .c-bt-note { display: none; }
@@ -254,35 +259,29 @@
   </div>
 
   <div class="card">
-    <h2>细分行业热力总览 <span class="note">每行一个申万一级，格宽=成分股数，颜色=当前冷热，点击格子下钻详情</span></h2>
-    <div id="heatBody" class="heat"></div>
+    <h2>细分行业当前状态排名 <span class="note">31 个申万一级行业，点击任一行展开其下属细分行业</span></h2>
+    <div class="srow">
+      <div class="gchips" id="sChips"></div>
+      <input id="qSearch" class="qin" type="search" placeholder="搜索一级 / 细分行业，如「光伏」「医药」"/>
+    </div>
+    <div class="note" id="tNote"></div>
+    <div class="twrap">
+      <table>
+        <thead><tr>
+          <th class="c-rank">#</th><th class="lft c-name">行业</th><th class="lft c-parent">层级</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-div">背离</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
+          <th class="c-rs">相对强度<br/>分位</th><th class="c-above">站上<br/>200日</th><th class="c-fdr">FDR显著</th>
+          <th class="c-chg5">5日变动</th><th class="c-ret20">20日</th><th class="c-ret60">60日</th><th class="c-ret250">250日</th><th class="c-fc">推演30日<br/>中位</th>
+        </tr></thead>
+        <tbody id="rankBody"></tbody>
+      </table>
+    </div>
     <div class="note legend-bar" style="margin-top:12px">
       <span class="legend-dot" style="background:#b1493f"></span>超买（危险）
       <span class="legend-dot" style="background:#c08a3e"></span>偏热
       <span class="legend-dot" style="background:#41617e"></span>中性
       <span class="legend-dot" style="background:#5f9b86"></span>偏冷
       <span class="legend-dot" style="background:#3c8168"></span>超卖（机会）
-      行按「组内最极端程度」排序（有极值的板块在最前），组内格子按分数从冷到热排列；热力条恒显示全部细分行业，不受下方筛选影响
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>细分行业当前状态排名 <span class="note">默认只看非中性档位，按极端程度排序</span></h2>
-    <div class="gchips" id="gChips"></div>
-    <div class="srow">
-      <div class="gchips" id="sChips"></div>
-      <input id="qSearch" class="qin" type="search" placeholder="搜索细分行业 / 所属一级，如「光伏」「医药」"/>
-    </div>
-    <div class="note" id="tNote"></div>
-    <div class="twrap">
-      <table>
-        <thead><tr>
-          <th class="c-rank">#</th><th class="lft c-name">细分行业</th><th class="lft c-parent">所属一级</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
-          <th class="c-rs">相对强度<br/>分位</th><th class="c-above">站上<br/>200日</th><th class="c-fdr">FDR显著</th><th class="c-div">背离</th>
-          <th class="c-chg5">5日变动</th><th class="c-ret20">20日</th><th class="c-ret60">60日</th><th class="c-ret250">250日</th><th class="c-fc">推演30日<br/>中位</th>
-        </tr></thead>
-        <tbody id="rankBody"></tbody>
-      </table>
+      行业名后的小色条 = 该一级行业下属各细分行业的冷热分布（从左到右由冷到热）；点击一级行业行展开明细，其中中性的细分行业淡化显示
     </div>
   </div>
 

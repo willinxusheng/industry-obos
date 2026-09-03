@@ -2,7 +2,10 @@
  *
  * 目的: test_render.js 用的是 DOM stub, 跑不出真实 DOM 行为(innerHTML 解析 / 事件冒泡 /
  * querySelectorAll / 类名切换 / 事件委托)。本脚本用 jsdom 加载真实模板 + 真实数据 + 真实
- * sub_app.js, 验证分组热力条与表格折叠/排序/搜索/联动的实际行为——补 stub 门禁覆盖不到的部分。
+ * sub_app.js, 验证两级可展开表格的实际行为——补 stub 门禁覆盖不到的部分。
+ *
+ * 核心契约: 109 个二级行业一个都不少, 只是默认收起来了。逐个展开 31 个一级行业
+ *   后必须恰好凑齐 109 个、且无重复。这是"折叠"与"藏数据"的分界线。
  *
  * 运行:  npm i jsdom (任意位置, 能 require 到即可)  ->  node test_dom_sub.js
  * 说明: 刻意不挂进 daily.yml —— npm 安装失败会拖垮每日数据刷新, 得不偿失。
@@ -28,7 +31,7 @@ const dom = new JSDOM(tpl, { runScripts: 'outside-only', virtualConsole: vc, pre
 const { window } = dom;
 const doc = window.document;
 
-// echarts stub（热力条已改为纯 DOM，仅详情图用 echarts）
+// echarts stub（两级表格是纯 DOM，仅详情图用 echarts）
 window.echarts = {
   init() {
     return { setOption() {}, resize() {}, on() {}, off() {}, getZr() { return { on() {} }; } };
@@ -37,6 +40,16 @@ window.echarts = {
 const DATA_RAW = fs.readFileSync(REPO + '/data/sub_obos.json', 'utf8');
 const DATA = JSON.parse(DATA_RAW);
 window.eval('var DATA = ' + DATA_RAW + ';');
+// PARENTS 直接取自构建产物 sub_data.js —— 验证的是"构建 → 前端"完整链路, 而不是另写一份抽取逻辑
+let parCount = 0;
+try {
+  const sd = fs.readFileSync(REPO + '/sub_data.js', 'utf8');
+  const m = sd.match(/var PARENTS = (\[[\s\S]*?\]);\s*$/m);
+  if (m) { window.eval('var PARENTS = ' + m[1] + ';'); parCount = JSON.parse(m[1]).length; }
+  else throw new Error('no PARENTS in sub_data.js');
+} catch (e) {
+  window.eval('var PARENTS = [];');
+}
 window.eval(fs.readFileSync(REPO + '/sub_app.js', 'utf8'));
 
 let fail = 0;
@@ -46,93 +59,138 @@ function ok(cond, label, extra) {
 }
 const q = s => doc.querySelectorAll(s);
 const click = el => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-
-console.log('--- 1. 首屏渲染 ---');
-const nInd = DATA.industries.length;
-ok(q('#heatBody .hrow').length === 31, '热力条行数 = 31 个一级行业', q('#heatBody .hrow').length);
-ok(q('#heatBody .hcell').length === nInd, '热力条格子数 = ' + nInd + ' 个二级行业', q('#heatBody .hcell').length);
-ok(q('#sChips .gchip').length === 6, '档位 chips = 全部 + 5 档', q('#sChips .gchip').length);
-ok(q('#gChips .gchip').length === 32, '一级 chips = 全部 + 31 组', q('#gChips .gchip').length);
-
-const nonNeutral = DATA.industries.filter(x => x.state && x.state !== '中性' && x.state !== '-').length;
-const rows0 = q('#rankBody tr').length;
-ok(rows0 === nonNeutral, '表格默认行数 = 非中性数 ' + nonNeutral, rows0);
-ok(doc.getElementById('tNote').innerHTML.includes(String(nonNeutral)), 'tNote 显示数量与档位说明');
-/* 只校验"状态"列(.c-state)不含中性——注意"综合信号"列渲染的是 sig_label,
-   其值也可能是"中性", 两者是不同字段, 不能混为一谈 */
-ok([...q('#rankBody td.c-state')].every(td => td.textContent.trim() !== '中性'),
-  '默认视图状态列不含中性档位',
-  [...q('#rankBody td.c-state')].map(td => td.textContent.trim()).filter(t => t === '中性').length);
-
-console.log('--- 2. 排序契约（偏离 50 分降序）---');
-const codes = [...q('#rankBody tr')].map(tr => tr.getAttribute('data-code'));
+const grpRows = () => [...q('#rankBody tr.rowgrp')];
+const subRows = () => [...q('#rankBody tr.rowsub')];
+const grpByName = n => grpRows().find(t => t.getAttribute('data-g') === n);
 const byCode = {};
 DATA.industries.forEach(x => { byCode[x.code] = x; });
+const nInd = DATA.industries.length;
+const parentsOf = {};
+DATA.industries.forEach(x => { (parentsOf[x.parent || '其他'] = parentsOf[x.parent || '其他'] || []).push(x); });
+const nParents = Object.keys(parentsOf).length;
+
+console.log('--- 0. 数据与环境 ---');
+console.log('  二级行业 ' + nInd + ' 个 / 一级行业 ' + nParents + ' 个 / PARENTS ' + parCount + ' 条'
+  + (parCount ? '' : '（降级：一级指标不可用）'));
+ok(nParents === 31, '一级分组数 = 31', nParents);
+
+console.log('--- 1. 首屏：31 个一级行业，二级全部收起 ---');
+ok(grpRows().length === nParents, '一级行数 = ' + nParents, grpRows().length);
+ok(subRows().length === 0, '默认全收起，首屏不出现二级行', subRows().length);
+const miniTotal = q('#rankBody .mini').length;
+ok(miniTotal === nInd, '迷你热力条格子合计 = ' + nInd + ' 个二级行业（总览信息不缩水）', miniTotal);
+ok(q('#sChips .gchip').length === 6, '档位 chips = 全部 + 5 档', q('#sChips .gchip').length);
+ok(q('#gChips').length === 0, '原一级分组 chips 已移除（与行点击展开重复）');
+ok(q('#heatBody').length === 0, '原热力总览模块已移除');
+
+console.log('--- 2. 一级行排序（偏离 50 分降序）---');
+function parDev(name) {
+  const tr = grpByName(name);
+  const td = tr && tr.querySelector('td.c-score');
+  const v = td ? parseFloat(td.textContent) : NaN;
+  if (isFinite(v)) return Math.abs(v - 50);
+  return (parentsOf[name] || []).reduce((m, x) => Math.max(m, Math.abs((x.cur_score || 50) - 50)), 0);
+}
+const gnames = grpRows().map(t => t.getAttribute('data-g'));
 let sorted = true, prev = Infinity;
-for (const c of codes) {
-  const d = Math.abs(byCode[c].cur_score - 50);
+for (const n of gnames) {
+  const d = parDev(n);
   if (d > prev + 1e-9) sorted = false;
   prev = d;
 }
-ok(sorted, '行序按 |score-50| 降序（越极端越靠前）');
-ok(Math.abs(byCode[codes[0]].cur_score - 50) >= Math.abs(byCode[codes[codes.length - 1]].cur_score - 50),
-  '首行是最极端行业: ' + byCode[codes[0]].name + ' ' + byCode[codes[0]].cur_score);
+ok(sorted, '一级行按偏离度降序（最极端的板块排最前）');
+ok(gnames[0] === gnames.slice().sort((a, b) => parDev(b) - parDev(a))[0],
+  '首行是最极端一级: ' + gnames[0]);
 
-console.log('--- 3. 档位 chips 交互 ---');
-const chip = label => [...q('#sChips .gchip')].find(c => c.textContent.startsWith(label));
-click(chip('中性'));
-ok(q('#rankBody tr').length === nInd, '点「中性」后显示全部 ' + nInd + ' 行', q('#rankBody tr').length);
-click(chip('中性'));
-ok(q('#rankBody tr').length === nonNeutral, '再点「中性」收回 ' + nonNeutral + ' 行', q('#rankBody tr').length);
-click(chip('全部'));
-ok(q('#rankBody tr').length === nInd, '点「全部」= ' + nInd + ' 行', q('#rankBody tr').length);
-click(chip('全部'));
-ok(q('#rankBody tr').length === nInd, '「全部」状态下再点不塌陷（不出现空表）', q('#rankBody tr').length);
+console.log('--- 3. 展开 / 收起 交互 ---');
+const first = gnames[0];
+click(grpByName(first));
+const n1 = subRows().length;
+ok(n1 === (parentsOf[first] || []).length,
+  '展开「' + first + '」出现 ' + n1 + ' 个二级行（该组实有 ' + (parentsOf[first] || []).length + '）', n1);
+ok(grpByName(first).classList.contains('open'), '展开后一级行带 open 类');
+ok(grpByName(first).querySelector('.arw').textContent.includes('▾'), '展开后箭头为 ▾');
+/* 中性的二级行业必须带 dim（淡化而非隐藏） */
+const dimRows = [...q('#rankBody tr.rowsub.dim')];
+const neutralRows = subRows().filter(tr => {
+  const x = byCode[tr.getAttribute('data-code')];
+  return x && x.state === '中性';
+});
+ok(dimRows.length === neutralRows.length,
+  '中性二级行全部淡化（' + neutralRows.length + ' 个），未隐藏任何一个',
+  dimRows.length + ' vs ' + neutralRows.length);
+ok(subRows().length > 0 && subRows().every(tr => tr.getAttribute('data-code')),
+  '每个二级行都有 data-code（可下钻）');
+click(grpByName(first));
+ok(subRows().length === 0, '再点一次收起，二级行消失', subRows().length);
 
-console.log('--- 4. 搜索框 ---');
+console.log('--- 4. 核心契约：逐个展开 31 组，109 个一个不少 ---');
+const seen = new Set();
+let accumulated = 0;
+for (const n of gnames) {
+  const tr = grpByName(n);
+  if (!tr) { ok(false, '找不到一级行 ' + n); break; }
+  click(tr);
+  const subs = subRows();
+  accumulated += subs.length;
+  subs.forEach(t => seen.add(t.getAttribute('data-code')));
+  click(grpByName(n));
+}
+ok(accumulated === nInd, '展开 31 组累计 ' + accumulated + ' 个二级行 = ' + nInd, accumulated);
+ok(seen.size === nInd, '去重后覆盖 ' + seen.size + ' 个（无重复、无遗漏）', seen.size);
+ok(subRows().length === 0, '全部收起后回到 ' + grpRows().length + ' 行', subRows().length);
+
+console.log('--- 5. 二级行下钻（切换详情图）---');
+click(grpByName(first));
+const before = doc.getElementById('detailTitle').textContent;
+const anySub = subRows()[0];
+const anyName = byCode[anySub.getAttribute('data-code')].name;
+click(anySub);
+ok(doc.getElementById('detailTitle').textContent.includes(anyName),
+  '点二级行切换详情图: ' + anyName);
+ok(q('#rankBody tr.rowsub.sel').length === 1, '选中态唯一', q('#rankBody tr.rowsub.sel').length);
+ok(anySub.classList.contains('sel'), '被点的二级行带 sel 类');
+/* 一级行点击只展开，不应把详情图换掉（一级没有详情曲线数据） */
+const titleBefore = doc.getElementById('detailTitle').textContent;
+click(grpByName(first));
+click(grpByName(first));
+ok(doc.getElementById('detailTitle').textContent === titleBefore,
+  '点一级行不切换详情图（只展开/收起）');
+
+console.log('--- 6. 搜索（命中组内二级时自动展开）---');
 const inp = doc.getElementById('qSearch');
-inp.value = '光伏';
-inp.dispatchEvent(new window.Event('input', { bubbles: true }));
-const hit = [...q('#rankBody tr')].map(tr => byCode[tr.getAttribute('data-code')].name);
-ok(hit.length === 1 && hit[0].includes('光伏'), '搜「光伏」命中 1 行: ' + hit.join(','), hit.join(','));
-inp.value = '医药';
-inp.dispatchEvent(new window.Event('input', { bubbles: true }));
-const hit2 = [...q('#rankBody tr')].map(tr => byCode[tr.getAttribute('data-code')].parent);
-ok(hit2.length > 0 && hit2.every(p => p && p.includes('医药')), '按所属一级搜「医药」命中 ' + hit2.length + ' 行');
-inp.value = '不存在的行业名';
-inp.dispatchEvent(new window.Event('input', { bubbles: true }));
+function search(kw) {
+  inp.value = kw;
+  inp.dispatchEvent(new window.Event('input', { bubbles: true }));
+}
+search('光伏');
+const pvSubs = subRows().map(t => byCode[t.getAttribute('data-code')].name);
+ok(pvSubs.some(n => n.includes('光伏')), '搜「光伏」自动展开并命中: ' + pvSubs.filter(n => n.includes('光伏')).join(','));
+ok(grpRows().length >= 1 && grpRows().length <= nParents, '只显示命中的一级行', grpRows().length);
+search('医药');
+ok(subRows().length > 0, '搜「医药」命中 ' + subRows().length + ' 个二级行并展开');
+search('不存在的行业名xyz');
 ok(q('#rankBody tr').length === 1 && doc.getElementById('rankBody').innerHTML.includes('未找到'),
   '无匹配时显示空状态提示而非空白表');
-inp.value = '';
-inp.dispatchEvent(new window.Event('input', { bubbles: true }));
-ok(q('#rankBody tr').length === nInd, '清空搜索后恢复（当前为全部档位）', q('#rankBody tr').length);
+search('');
+ok(grpRows().length === nParents, '清空搜索后恢复 ' + nParents + ' 个一级行', grpRows().length);
 
-console.log('--- 5. 热力条下钻 + 联动高亮 ---');
-const cell = q('#heatBody .hcell')[0];
-const cellName = cell.textContent;
-click(cell);
-ok(doc.getElementById('detailTitle').textContent.includes(cellName),
-  '点格子切换详情图: ' + cellName);
-ok(q('#heatBody .hcell.sel').length === 1, '热力条选中态唯一', q('#heatBody .hcell.sel').length);
-ok(cell.classList.contains('sel'), '被点的格子带 sel 类');
+console.log('--- 7. 档位 chips（作用于一级行）---');
+const chip = label => [...q('#sChips .gchip')].find(c => c.textContent.startsWith(label));
+click(chip('中性'));
+const afterUncheck = grpRows().length;
+ok(afterUncheck < nParents, '取消「中性」后一级行减少到 ' + afterUncheck + '（原 ' + nParents + '）', afterUncheck);
+click(chip('全部'));
+ok(grpRows().length === nParents, '点「全部」恢复 ' + nParents + ' 行', grpRows().length);
+click(chip('全部'));
+ok(grpRows().length === nParents, '「全部」状态下再点不塌陷（不出现空表）', grpRows().length);
 
-console.log('--- 6. 一级分组 chips 联动 ---');
-const gchip = [...q('#gChips .gchip')].find(c => c.textContent.startsWith('电力设备'));
-click(gchip);
-ok(q('#rankBody tr').length > 0, '选「电力设备」后表格有数据', q('#rankBody tr').length);
-ok([...q('#rankBody tr')].every(tr => byCode[tr.getAttribute('data-code')].parent === '电力设备'),
-  '表格只含该一级下的二级行业');
-ok(q('#heatBody .hrow.dim').length === 30, '热力条其余 30 行被淡化（dim）', q('#heatBody .hrow.dim').length);
-ok(q('#heatBody .hcell').length === nInd, '淡化不影响格子总数（仍覆盖全部）');
-click([...q('#gChips .gchip')].find(c => c.textContent.startsWith('全部')));
-ok(q('#heatBody .hrow.dim').length === 0, '回到全部后淡化清除');
-
-console.log('--- 7. 详情图 / 回测 / 门禁区块 ---');
+console.log('--- 8. 详情图 / 回测 / 门禁区块 ---');
 ok(doc.getElementById('detailTitle').textContent.length > 0, '详情标题已渲染');
 ok(q('#btBody tr').length >= 6, '回测表行数 >= 6', q('#btBody tr').length);
 ok(doc.getElementById('qBadge').textContent === DATA.quality.status, '质量徽章状态 = ' + DATA.quality.status);
 
-console.log('--- 8. 运行期错误 ---');
+console.log('--- 9. 运行期错误 ---');
 ok(errs.length === 0, '无 JS 运行期错误', errs.join(' | '));
 
 console.log('\n' + (fail === 0 ? 'REAL-DOM VERIFY PASSED' : 'REAL-DOM VERIFY FAILED: ' + fail + ' 项'));

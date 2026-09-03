@@ -9,6 +9,30 @@ const data = JSON.parse(fs.readFileSync(path + (SUB ? '/data/sub_obos.json' : '/
 const appsrc = fs.readFileSync(path + (SUB ? '/sub_app.js' : '/app.js'), 'utf8');
 const appName = SUB ? 'sub_app.js' : 'app.js';
 
+/* [2026-09-03] 一级行业数据: 与 build_html.py --sub 的 _parents_js 同款抽取 + 同款同步判据。
+ * 门禁必须测真实构建路径(31 个一级行带真实指标); 数据不同步时也必须测降级路径(指标列一律 "-")。
+ * 两条路径都要覆盖——只测一条, 另一条就会悄悄烂掉。 */
+const PARENT_KEYS = ['code', 'name', 'cur_score', 'state', 'sig_label', 'divergence',
+  'chg5', 'ret20', 'ret60', 'ret250', 'vol_ratio', 'vol_state',
+  'rs_pct_now', 'above_ma200', 'fdr_q', 'sig', 'ob_line', 'hot_line', 'cold_line', 'os_line'];
+let parents = [];
+let parentsSynced = false;
+if (SUB) {
+  const pdata = JSON.parse(fs.readFileSync(path + '/data/industry_obos.json', 'utf8'));
+  parentsSynced = (pdata.asof === data.asof);
+  if (parentsSynced) {
+    parents = pdata.industries.map(function (x) {
+      const rec = {};
+      for (const k of PARENT_KEYS) rec[k] = x[k];
+      const med = (x.forecast || {}).median;
+      rec.fc_end = Array.isArray(med) && med.length ? med[med.length - 1] : null;
+      return rec;
+    });
+  }
+  console.log('parents: synced=%s count=%d (一级 asof=%s vs 二级 asof=%s)',
+    parentsSynced, parents.length, pdata.asof, data.asof);
+}
+
 // 1) 数据字段完整性校验
 const need = ['rs_pct', 'ob_line', 'os_line', 'ob_series', 'os_series', 'above_ma200', 'sig', 'fdr_q',
   'ma200', 'rs_pct_now', 'rel_now', 'opp_score', 'risk_score', 'sig_label', 'sig_kind', 'divergence'];
@@ -108,7 +132,7 @@ const document = {
 };
 const echarts = { init() { return { setOption() {}, resize() {}, on() {}, off() {} }; } };
 const window = { addEventListener() {} };
-const sandbox = { DATA: data, echarts, document, window, console, Math, JSON, Array, Object,
+const sandbox = { DATA: data, PARENTS: parents, echarts, document, window, console, Math, JSON, Array, Object,
   String, Number, isFinite, parseFloat, parseInt, setTimeout, RegExp };
 vm.createContext(sandbox);
 try {
@@ -155,69 +179,123 @@ try {
   const rbh = String(rb.innerHTML);
   const rowHtmls = rbh.match(/<tr[\s\S]*?<\/tr>/g) || [];
   if (!rowHtmls.length) { console.error('rankBody has no <tr> rows'); process.exit(1); }
-  // 逐行校验(只校验实际渲染的行): 行的 data-code 必须存在于数据里, 且该行的综合信号 /
-  // 状态 chip 必须与后端字段逐字一致。比原先"全文搜索标签"更严格——错行也能抓出来。
+  // 逐行校验(只校验实际渲染的行), 一级行(data-g)与二级行(data-code)分开:
+  //  一级行 -> 状态 chip 必须与 PARENTS 逐字一致; 降级时必须渲染 "-" 而不是假数字
+  //  二级行 -> 综合信号 / 状态 chip 必须与后端字段逐字一致
+  // 比原先"全文搜索标签"更严格——错行、错层级、用旧数冒充都能抓出来。
   const byCode = {};
   for (const x of data.industries) byCode[x.code] = x;
+  const byParent = {};
+  for (const p of parents) byParent[p.name] = p;
   const shownCodes = [];
+  const shownParents = [];
   for (const rh of rowHtmls) {
-    const m = rh.match(/data-code="([^"]+)"/);
-    if (!m) { console.error('rankBody row without data-code:', rh.slice(0, 120)); process.exit(1); }
-    const x = byCode[m[1]];
-    if (!x) { console.error('rankBody row code not in data:', m[1]); process.exit(1); }
-    if (x.sig_label && !rh.includes('>' + x.sig_label + '<')) {
-      console.error('rankBody sig_label mismatch:', x.name, x.sig_label); process.exit(1);
+    const mg = rh.match(/data-g="([^"]+)"/);
+    const mc = rh.match(/data-code="([^"]+)"/);
+    if (mg && !mc) {
+      shownParents.push(mg[1]);
+      if (parentsSynced) {
+        const p = byParent[mg[1]];
+        if (!p) { console.error('rankBody parent row not in PARENTS:', mg[1]); process.exit(1); }
+        if (p.state && p.state !== '-' && !rh.includes('>' + p.state + '</span>')) {
+          console.error('rankBody parent chip missing state', p.name, p.state); process.exit(1);
+        }
+      } else {
+        /* 降级路径: 一级指标不可用, 综合分单元格必须渲染 "-"——出现数字说明拿旧数据冒充了。
+         * 只查"整行含 >-< "不够严格(涨跌/收益列的 "-" 会把它糊过去), 必须锁定 c-score 这一格。 */
+        var scCell = rh.match(/<td class="c-score">[\s\S]*?<\/td>/);
+        if (!scCell) {
+          console.error('degraded parent row missing c-score cell:', mg[1]); process.exit(1);
+        }
+        if (!/>-<\/b>/.test(scCell[0])) {
+          console.error('degraded parent row must render "-" instead of stale numbers:', mg[1], scCell[0]);
+          process.exit(1);
+        }
+      }
+      continue;
     }
-    if (x.state && x.state !== '-' && !rh.includes('>' + x.state + '</span>')) {
-      console.error('rankBody chip missing state', x.name, x.state); process.exit(1);
+    if (mc) {
+      const x = byCode[mc[1]];
+      if (!x) { console.error('rankBody row code not in data:', mc[1]); process.exit(1); }
+      if (x.sig_label && !rh.includes('>' + x.sig_label + '<')) {
+        console.error('rankBody sig_label mismatch:', x.name, x.sig_label); process.exit(1);
+      }
+      if (x.state && x.state !== '-' && !rh.includes('>' + x.state + '</span>')) {
+        console.error('rankBody chip missing state', x.name, x.state); process.exit(1);
+      }
+      shownCodes.push(mc[1]);
+      continue;
     }
-    shownCodes.push(m[1]);
+    console.error('rankBody row with neither data-g nor data-code:', rh.slice(0, 120)); process.exit(1);
   }
   if (shownCodes.length > data.industries.length) {
-    console.error('rankBody rows exceed industries:', shownCodes.length); process.exit(1);
+    console.error('rankBody sub rows exceed industries:', shownCodes.length); process.exit(1);
   }
+  // 背离列必须存在(且不能因为列序调整或窄屏隐藏而消失)
   if (!rbh.includes('看涨') && !rbh.includes('看跌') && !rbh.includes('>-<')) {
     console.error('rankBody missing divergence col'); process.exit(1);
   }
-  console.log('rankBody OK: %d rows rendered, composite+divergence columns present', shownCodes.length);
+  console.log('rankBody OK: %d rows rendered (%d group-level), divergence column present',
+    shownParents.length + shownCodes.length, shownParents.length);
 
   if (SUB) {
-    // [2026-09-03] 视图收敛契约: 默认视图必须"恰好等于非中性档位"(中性行业被折叠),
-    // 且必须按 |cur_score-50| 偏离度降序。若某日非中性为 0 则退化为全部(由 tNote 说明)。
-    const nonNeutral = data.industries.filter(x => x.state && x.state !== '中性' && x.state !== '-');
-    const expectCodes = (nonNeutral.length ? nonNeutral : data.industries).map(x => x.code).sort();
-    if (JSON.stringify(shownCodes.slice().sort()) !== JSON.stringify(expectCodes)) {
-      console.error('default view filter mismatch: rendered %d vs expected %d (nonNeutral=%d)',
-        shownCodes.length, expectCodes.length, nonNeutral.length);
-      process.exit(1);
+    /* [2026-09-03] 两级可展开契约(默认全收起):
+     *  1) 一级行数必须恰好 = 一级分组数(31), 一个不多一个不少
+     *  2) 一级行必须按偏离度降序(同步时用自身分数, 降级时用组内最极端二级的偏离度)
+     *  3) 默认全收起 -> 首屏不得出现任何二级行(否则又退回 109 行平铺)
+     *  4) 每行的迷你热力条格子数必须 = 该组二级行业数, 合计覆盖全部 109 个(总览信息不缩水) */
+    const nParents = new Set(data.industries.map(x => x.parent || '其他')).size;
+    if (shownParents.length !== nParents) {
+      console.error('default view: %d parent rows, expected %d', shownParents.length, nParents); process.exit(1);
+    }
+    if (shownCodes.length !== 0) {
+      console.error('default view must be fully collapsed, got %d sub rows', shownCodes.length); process.exit(1);
+    }
+    const kidsOf = {};
+    for (const x of data.industries) (kidsOf[x.parent || '其他'] = kidsOf[x.parent || '其他'] || []).push(x);
+    function parDev(name) {
+      const p = byParent[name];
+      if (p && typeof p.cur_score === 'number' && isFinite(p.cur_score)) return Math.abs(p.cur_score - 50);
+      return (kidsOf[name] || []).reduce(function (m, x) {
+        var s = (typeof x.cur_score === 'number' && isFinite(x.cur_score)) ? x.cur_score : 50;
+        return Math.max(m, Math.abs(s - 50));
+      }, 0);
     }
     let prevDev = Infinity;
-    for (const c of shownCodes) {
-      const s = byCode[c].cur_score;
-      const d = Math.abs((typeof s === 'number' && isFinite(s) ? s : 50) - 50);
+    for (const name of shownParents) {
+      const d = parDev(name);
       if (d > prevDev + 1e-9) {
-        console.error('rankBody not sorted by |score-50| desc at', byCode[c].name); process.exit(1);
+        console.error('parent rows not sorted by deviation desc at %s (%s > %s)', name, d, prevDev);
+        process.exit(1);
       }
       prevDev = d;
     }
-    console.log('default view OK: collapsed to %d non-neutral of %d, sorted by deviation',
-      shownCodes.length, data.industries.length);
-
-    // 分组热力条: 必须覆盖全部行业, 行数 = 一级分组数(热力条不受表格筛选影响)
-    const hbh = String((elements.heatBody || {}).innerHTML || '');
-    if (!hbh) { console.error('heatBody NOT rendered'); process.exit(1); }
-    let heatMiss = 0;
-    for (const x of data.industries) if (!hbh.includes('data-code="' + x.code + '"')) heatMiss++;
-    if (heatMiss) { console.error('heatBody missing %d industries', heatMiss); process.exit(1); }
-    const nParents = new Set(data.industries.map(x => x.parent || '其他')).size;
-    const heatRows = (hbh.match(/class="hrow/g) || []).length;
-    if (heatRows !== nParents) {
-      console.error('heatBody rows %d != parents %d', heatRows, nParents); process.exit(1);
+    let miniSum = 0;
+    for (const s of rbh.split('<tr').slice(1)) {
+      const mg = s.match(/data-g="([^"]+)"/);
+      if (!mg) continue;
+      const nMini = (s.match(/class="mini"/g) || []).length;
+      const nKid = (kidsOf[mg[1]] || []).length;
+      if (nMini !== nKid) {
+        console.error('mini bar mismatch at %s: %d cells vs %d subs', mg[1], nMini, nKid); process.exit(1);
+      }
+      miniSum += nMini;
     }
-    console.log('group heat bars OK: %d rows / %d industries covered', heatRows, data.industries.length);
-    // 档位 chips + 表格说明必须渲染(否则筛选/搜索入口缺失)
+    if (miniSum !== data.industries.length) {
+      console.error('mini bars cover %d subs, expected all %d', miniSum, data.industries.length); process.exit(1);
+    }
+    console.log('two-level tree OK: %d parent rows collapsed, sorted by deviation, mini bars cover all %d subs%s',
+      shownParents.length, data.industries.length, parentsSynced ? '' : ' (degraded: no PARENTS)');
+    // 档位 chips + 表格说明必须渲染(否则筛选/搜索入口缺失), 且说明里必须有展开提示
     for (const id of ['sChips', 'tNote']) {
       if (!(elements[id] && elements[id].innerHTML)) { console.error(id + ' NOT rendered'); process.exit(1); }
+    }
+    if (!String(elements.tNote.innerHTML).includes('点击')) {
+      console.error('tNote missing expand hint'); process.exit(1);
+    }
+    /* 一级数据缺失必须如实披露, 否则用户会把"没数据"误读成"所有一级行业都没信号" */
+    if (!parentsSynced && !String(elements.tNote.innerHTML).includes('暂不可用')) {
+      console.error('tNote must disclose degraded parent metrics'); process.exit(1);
     }
     console.log('state chips + table note rendered: OK');
   }

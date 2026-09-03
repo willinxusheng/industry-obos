@@ -3,10 +3,52 @@
 
 [2026-09-03] --sub 模式: template_sub.html + sub_app.js + data/sub_obos.json
   -> sub.html + sub_data.js (申万二级 109 个细分行业看板, 与主看板同构建契约)
+
+[2026-09-03] --sub 追加 PARENTS: 31 个申万一级行业的关键字段, 供二级看板的"一级行业
+  可展开行"使用。只抽关键字段(不含 score/forecast 等时间序列), 避免为此加载主看板
+  2.6MB 全量数据。口径与主看板完全一致(同源 industry_obos.json), 杜绝"同一行业两个分数"。
 """
 import json, os, io, sys
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+# 一级行业行需要的字段(对应排名表 16 列中的可见列 + 状态判定阈值线)
+PARENT_KEYS = ['code', 'name', 'cur_score', 'state', 'sig_label', 'divergence',
+               'chg5', 'ret20', 'ret60', 'ret250', 'vol_ratio', 'vol_state',
+               'rs_pct_now', 'above_ma200', 'fdr_q', 'sig',
+               'ob_line', 'hot_line', 'cold_line', 'os_line']
+
+def _parents_js(sub_data):
+    """[2026-09-03] 从主看板 industry_obos.json 抽 31 个一级行业关键字段 -> PARENTS 数组
+    只抽标量字段 + 推演末值, 不带时间序列, 追加进 sub_data.js 而非整包引入主看板数据。
+
+    同步判据(降级而非硬失败): 一级与二级必须同日, 否则"电力设备 29.4 / 光伏设备 18.3"
+    会是两个时点的数, 比不显示更误导 -> 此时返回空数组, 前端一级行退化为占位(指标列一律 "-")。
+    不抛异常的原因: daily.yml 的 commit 步骤在最后, 此处失败会连带主看板也发不出去。
+    """
+    with io.open(os.path.join(BASE, "data", "industry_obos.json"), encoding="utf-8") as f:
+        pdata = json.load(f)
+    pa, sa = pdata.get("asof"), sub_data.get("asof")
+    if pa != sa:
+        print("::warning::一级/二级数据不同步(一级 asof=%s vs 二级 asof=%s)，"
+              "本轮不注入 PARENTS，一级行业行退化为占位(指标列显示 -)" % (pa, sa))
+        return "[]"
+    out = []
+    for x in pdata["industries"]:
+        rec = {}
+        for k in PARENT_KEYS:
+            rec[k] = x.get(k)
+        # 推演30日中位: 只取末值(表格列只需一个数), 不搬整个 forecast
+        med = (x.get("forecast") or {}).get("median")
+        rec["fc_end"] = med[-1] if isinstance(med, list) and med else None
+        out.append(rec)
+    if len(out) != 31:
+        print("::warning::一级行业数异常(%d，期望 31)，本轮不注入 PARENTS" % len(out))
+        return "[]"
+    js = json.dumps(out, ensure_ascii=False).replace("</script>", "<\\/script>")
+    assert "NaN" not in js and "Infinity" not in js, "non-finite number in PARENTS"
+    return js
+
 
 def main(sub_mode=False):
     tpl_file = "template_sub.html" if sub_mode else "template.html"
@@ -30,9 +72,12 @@ def main(sub_mode=False):
     assert "NaN" not in data_js and "Infinity" not in data_js, "non-finite number in DATA"
 
     # 数据拆为独立外链(同样可缓存)，不再塞进 HTML
+    payload = "var DATA = " + data_js + ";\n"
+    if sub_mode:
+        payload += "var PARENTS = " + _parents_js(data) + ";\n"
     data_js_path = os.path.join(BASE, data_js_name)
     with io.open(data_js_path, "w", encoding="utf-8") as f:
-        f.write("var DATA = " + data_js + ";\n")
+        f.write(payload)
     assert os.path.getsize(data_js_path) > 100000, data_js_name + " 写入异常(过小)"
 
     html = html.replace("__ECHARTS__", '<script src="echarts.min.js"></script>')
