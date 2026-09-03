@@ -150,21 +150,77 @@ try {
     process.exit(1);
   }
   console.log('cluster module removed: OK');
-  // 排名表含综合信号 + 背离
   const rb = elements.rankBody;
   if (!rb || !rb.innerHTML) { console.error('rankBody NOT rendered'); process.exit(1); }
-  // [2026-09-03] 原断言"rankBody 必含机会/风险"在全中性市况下误报（实测 2026-09-03
-  // 一级 31 行业 sig_label 全中性）。改为逐行业校验渲染标签与后端 sig_label 一致——
-  // 更严格且与市况无关：任何行业的标签渲染缺失/错配都会 FAIL。
-  for (const x of data.industries) {
-    if (x.sig_label && !String(rb.innerHTML).includes('>' + x.sig_label + '<')) {
+  const rbh = String(rb.innerHTML);
+  const rowHtmls = rbh.match(/<tr[\s\S]*?<\/tr>/g) || [];
+  if (!rowHtmls.length) { console.error('rankBody has no <tr> rows'); process.exit(1); }
+  // 逐行校验(只校验实际渲染的行): 行的 data-code 必须存在于数据里, 且该行的综合信号 /
+  // 状态 chip 必须与后端字段逐字一致。比原先"全文搜索标签"更严格——错行也能抓出来。
+  const byCode = {};
+  for (const x of data.industries) byCode[x.code] = x;
+  const shownCodes = [];
+  for (const rh of rowHtmls) {
+    const m = rh.match(/data-code="([^"]+)"/);
+    if (!m) { console.error('rankBody row without data-code:', rh.slice(0, 120)); process.exit(1); }
+    const x = byCode[m[1]];
+    if (!x) { console.error('rankBody row code not in data:', m[1]); process.exit(1); }
+    if (x.sig_label && !rh.includes('>' + x.sig_label + '<')) {
       console.error('rankBody sig_label mismatch:', x.name, x.sig_label); process.exit(1);
     }
+    if (x.state && x.state !== '-' && !rh.includes('>' + x.state + '</span>')) {
+      console.error('rankBody chip missing state', x.name, x.state); process.exit(1);
+    }
+    shownCodes.push(m[1]);
   }
-  if (!String(rb.innerHTML).includes('看涨') && !String(rb.innerHTML).includes('看跌') && !String(rb.innerHTML).includes('>-<')) {
+  if (shownCodes.length > data.industries.length) {
+    console.error('rankBody rows exceed industries:', shownCodes.length); process.exit(1);
+  }
+  if (!rbh.includes('看涨') && !rbh.includes('看跌') && !rbh.includes('>-<')) {
     console.error('rankBody missing divergence col'); process.exit(1);
   }
-  console.log('rankBody OK: composite+divergence columns present');
+  console.log('rankBody OK: %d rows rendered, composite+divergence columns present', shownCodes.length);
+
+  if (SUB) {
+    // [2026-09-03] 视图收敛契约: 默认视图必须"恰好等于非中性档位"(中性行业被折叠),
+    // 且必须按 |cur_score-50| 偏离度降序。若某日非中性为 0 则退化为全部(由 tNote 说明)。
+    const nonNeutral = data.industries.filter(x => x.state && x.state !== '中性' && x.state !== '-');
+    const expectCodes = (nonNeutral.length ? nonNeutral : data.industries).map(x => x.code).sort();
+    if (JSON.stringify(shownCodes.slice().sort()) !== JSON.stringify(expectCodes)) {
+      console.error('default view filter mismatch: rendered %d vs expected %d (nonNeutral=%d)',
+        shownCodes.length, expectCodes.length, nonNeutral.length);
+      process.exit(1);
+    }
+    let prevDev = Infinity;
+    for (const c of shownCodes) {
+      const s = byCode[c].cur_score;
+      const d = Math.abs((typeof s === 'number' && isFinite(s) ? s : 50) - 50);
+      if (d > prevDev + 1e-9) {
+        console.error('rankBody not sorted by |score-50| desc at', byCode[c].name); process.exit(1);
+      }
+      prevDev = d;
+    }
+    console.log('default view OK: collapsed to %d non-neutral of %d, sorted by deviation',
+      shownCodes.length, data.industries.length);
+
+    // 分组热力条: 必须覆盖全部行业, 行数 = 一级分组数(热力条不受表格筛选影响)
+    const hbh = String((elements.heatBody || {}).innerHTML || '');
+    if (!hbh) { console.error('heatBody NOT rendered'); process.exit(1); }
+    let heatMiss = 0;
+    for (const x of data.industries) if (!hbh.includes('data-code="' + x.code + '"')) heatMiss++;
+    if (heatMiss) { console.error('heatBody missing %d industries', heatMiss); process.exit(1); }
+    const nParents = new Set(data.industries.map(x => x.parent || '其他')).size;
+    const heatRows = (hbh.match(/class="hrow/g) || []).length;
+    if (heatRows !== nParents) {
+      console.error('heatBody rows %d != parents %d', heatRows, nParents); process.exit(1);
+    }
+    console.log('group heat bars OK: %d rows / %d industries covered', heatRows, data.industries.length);
+    // 档位 chips + 表格说明必须渲染(否则筛选/搜索入口缺失)
+    for (const id of ['sChips', 'tNote']) {
+      if (!(elements[id] && elements[id].innerHTML)) { console.error(id + ' NOT rendered'); process.exit(1); }
+    }
+    console.log('state chips + table note rendered: OK');
+  }
   // v5: 摘要计数必须与 PIT state 口径一致（不能一套固定80/20、一套动态阈值）
   const stCnt = { '超买': 0, '偏热': 0, '中性': 0, '偏冷': 0, '超卖': 0 };
   for (const x of data.industries) if (x.state in stCnt) stCnt[x.state]++;
@@ -178,13 +234,7 @@ try {
     console.error('summary counts inconsistent with PIT state:', JSON.stringify(shown), JSON.stringify(stCnt));
     process.exit(1);
   }
-  // 排名表 chip 文字必须逐行等于后端 state
-  for (const x of data.industries) {
-    if (x.state && x.state !== '-' && !String(rb.innerHTML).includes('>' + x.state + '</span>')) {
-      console.error('rankBody chip missing state', x.name, x.state); process.exit(1);
-    }
-  }
-  console.log('state consistency OK: summary/table/chart all use PIT thresholds (%s)',
+  console.log('state consistency OK: summary counts match PIT state (%s)',
     JSON.stringify(stCnt));
   // 全景已移除：确认 DOM 中不再存在 panorama 模块
   if (elements.panorama !== undefined && elements.panorama !== null) {

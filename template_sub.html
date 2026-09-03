@@ -91,9 +91,35 @@
     color: var(--ink-2); font-size: 12px; cursor: pointer; user-select: none;
     transition: all .18s var(--ease); }
   .gchip:hover { border-color: var(--blue); color: var(--blue); }
-  .gchip.on { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600;
+  .gchip.on { background: var(--sc, var(--blue)); border-color: var(--sc, var(--blue)); color: #fff; font-weight: 600;
     box-shadow: 0 2px 8px rgba(65,97,126,.3); }
   .gchip .n { opacity: .62; font-size: 10.5px; margin-left: 3px; }
+
+  /* ---------- 筛选行: 状态档位 chips + 搜索框 ---------- */
+  .srow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .srow .gchips { margin-bottom: 0; }
+  .qin { margin-left: auto; font-size: 12px; padding: 5px 12px; border: 1px solid var(--line);
+    border-radius: 999px; background: #fff; color: var(--ink); outline: none; min-width: 196px;
+    font-family: inherit; transition: box-shadow .15s var(--ease), border-color .15s var(--ease); }
+  .qin:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(65,97,126,.16); }
+  .qin::placeholder { color: #a7b0ba; }
+  #tNote { margin-bottom: 10px; }
+
+  /* ---------- 分组热力条: 每行一个申万一级, 行内嵌该组二级格子 ---------- */
+  .heat { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 20px; }
+  .hrow { display: flex; align-items: center; gap: 9px; min-width: 0; transition: opacity .2s var(--ease); }
+  .hrow.dim { opacity: .24; }
+  .hlab { flex: 0 0 78px; font-size: 12px; color: var(--ink-2); text-align: right; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .hlab .hn { color: var(--sub); font-size: 10.5px; margin-left: 4px; }
+  .hbar { flex: 1; min-width: 0; display: flex; gap: 3px; overflow: hidden; }
+  .hcell { flex: 1 1 0; min-width: 42px; height: 26px; border-radius: 6px; color: #fff;
+    font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    padding: 0 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    box-shadow: 0 1px 2px rgba(33,43,54,.14);
+    transition: transform .15s var(--ease), box-shadow .15s var(--ease); }
+  .hcell:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(33,43,54,.22); z-index: 2; }
+  .hcell.sel { box-shadow: 0 0 0 2px var(--ink), 0 2px 8px rgba(33,43,54,.2); }
 
   table { width: 100%; border-collapse: separate; border-spacing: 0;
     font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -142,7 +168,6 @@
   .tag-os { color: #3c8168; font-weight: 700; }
   .tag-na { color: #98a2b3; }
 
-  #heatmap { width: 100%; height: 480px; }
 
   @media (max-width: 820px) {
     .grid6 { grid-template-columns: repeat(3, 1fr); }
@@ -150,7 +175,7 @@
     .hero h1 { font-size: 18px; }
     .wrap { padding: 14px 10px 40px; }
     .card { padding: 14px 14px; }
-    #heatmap { height: 420px; }
+    .heat { grid-template-columns: minmax(0, 1fr); }
   }
 
   @media (max-width: 640px) {
@@ -166,7 +191,9 @@
     .metric { padding: 11px 12px; border-radius: 11px; }
     .metric .v { font-size: 18px; }
     .metric .v[style*="15px"] { font-size: 13px !important; }
-    #heatmap { height: 380px; }
+    .hlab { flex-basis: 64px; font-size: 11px; }
+    .hcell { height: 24px; font-size: 10px; min-width: 34px; }
+    .qin { margin-left: 0; width: 100%; min-width: 0; }
 
     .twrap { max-height: none; border-radius: 8px; -webkit-overflow-scrolling: touch; }
     table { font-size: 11px; }
@@ -201,7 +228,6 @@
     .disc { font-size: 9.5px; }
     #detail { height: 340px; }
     #detailTitle { font-size: 12px; }
-    #heatmap { height: 330px; }
   }
 
   @supports (padding: env(safe-area-inset-top)) {
@@ -228,21 +254,26 @@
   </div>
 
   <div class="card">
-    <h2>细分行业热力总览 <span class="note">块大小=成分股数，颜色=当前超买超卖分（点击块下钻详情）</span></h2>
-    <div id="heatmap"></div>
-    <div class="note legend-bar" style="margin-top:6px">
+    <h2>细分行业热力总览 <span class="note">每行一个申万一级，格宽=成分股数，颜色=当前冷热，点击格子下钻详情</span></h2>
+    <div id="heatBody" class="heat"></div>
+    <div class="note legend-bar" style="margin-top:12px">
       <span class="legend-dot" style="background:#b1493f"></span>超买（危险）
       <span class="legend-dot" style="background:#c08a3e"></span>偏热
       <span class="legend-dot" style="background:#41617e"></span>中性
       <span class="legend-dot" style="background:#5f9b86"></span>偏冷
       <span class="legend-dot" style="background:#3c8168"></span>超卖（机会）
-      按所属申万一级行业分区
+      行按「组内最极端程度」排序（有极值的板块在最前），组内格子按分数从冷到热排列；热力条恒显示全部细分行业，不受下方筛选影响
     </div>
   </div>
 
   <div class="card">
-    <h2>细分行业当前状态排名 <span class="note">（点击分组筛选，点击任意行切换下方详情图）</span></h2>
+    <h2>细分行业当前状态排名 <span class="note">默认只看非中性档位，按极端程度排序</span></h2>
     <div class="gchips" id="gChips"></div>
+    <div class="srow">
+      <div class="gchips" id="sChips"></div>
+      <input id="qSearch" class="qin" type="search" placeholder="搜索细分行业 / 所属一级，如「光伏」「医药」"/>
+    </div>
+    <div class="note" id="tNote"></div>
     <div class="twrap">
       <table>
         <thead><tr>

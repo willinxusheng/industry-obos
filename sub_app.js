@@ -1,7 +1,10 @@
 /* A股细分行业超买超卖看板（申万二级 109 个 · 专业版 v5） - 前端逻辑
  * 依赖全局: DATA (sub_obos.json), echarts
  * 与主看板 app.js 同源: PIT 阈值时序 / 无重叠回测 + 块级检验 / 覆盖率校准区间
- * 新增: 一级分组热力总览(treemap) + 分组筛选 chips + 表格"所属一级"列
+ * [2026-09-03] 视图收敛: 分组热力条(31行) + 状态档位多选 + 关键词搜索
+ *   + 表格默认折叠中性 + 按 |cur_score-50| 偏离度排序
+ *   背景: 109 个二级行业常态 ~78% 为中性(实测 2026-09-03 为 85 中性 / 24 非中性),
+ *   平铺 109 行会把极值埋掉, 故默认只呈现非中性四档, 并按极端程度排序。
  * 红=超买=危险, 绿=超卖=机会 (A股红涨绿跌约定)
  */
 (function () {
@@ -81,9 +84,36 @@
   })();
   var curGroup = '__ALL__';
 
-  function visibleInds() {
+  /* ---------- [2026-09-03] 视图收敛: 状态档位多选 + 关键词搜索 ----------
+   * 默认只勾选非中性四档(超买/偏热/偏冷/超卖), 中性档不勾 -> 表格默认不渲染中性行业;
+   * 排序改为按 |cur_score-50| 偏离度降序, 越极端越靠前(逆向投资只关心两端)。
+   * 档位全选或全不选时等价于"全部"(避免出现空表这种无意义状态)。 */
+  var STATE_KEYS = ['超买', '偏热', '中性', '偏冷', '超卖'];
+  var STATE_COLOR = { '超买': COLORS.ob, '偏热': COLORS.hot, '中性': COLORS.mid, '偏冷': COLORS.cold, '超卖': COLORS.os };
+  var selStates = { '超买': 1, '偏热': 1, '偏冷': 1, '超卖': 1 };
+  var curQ = '';
+
+  function deviation(x) {
+    var s = (typeof x.cur_score === 'number' && isFinite(x.cur_score)) ? x.cur_score : 50;
+    return Math.abs(s - 50);
+  }
+  function groupBase() {
     if (curGroup === '__ALL__') return INDS;
     return INDS.filter(function (x) { return (x.parent || '其他') === curGroup; });
+  }
+  function byDeviation(list) {
+    return list.slice().sort(function (a, b) { return deviation(b) - deviation(a); });
+  }
+  function visibleInds() {
+    var keys = STATE_KEYS.filter(function (k) { return selStates[k]; });
+    var useAll = (keys.length === 0 || keys.length === STATE_KEYS.length);
+    var q = curQ ? String(curQ).toLowerCase() : '';
+    var out = groupBase().filter(function (x) {
+      if (!useAll && keys.indexOf(stateOf(x)) < 0) return false;
+      if (q && (String(x.name) + ' ' + String(x.parent || '')).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    return byDeviation(out);
   }
 
   /* ---------- 数据质量门禁 ---------- */
@@ -132,7 +162,14 @@
       var kk = KEY[stateOf(x)];
       if (kk) cnt[kk]++; else cnt.mid++;
     });
-    var top = INDS[0], bot = INDS[INDS.length - 1];
+    /* 最超买/最超卖一律显式取极值, 不依赖后端数组顺序(顺序一变就会静默报错) */
+    var top = null, bot = null;
+    INDS.forEach(function (x) {
+      if (typeof x.cur_score !== 'number' || !isFinite(x.cur_score)) return;
+      if (!top || x.cur_score > top.cur_score) top = x;
+      if (!bot || x.cur_score < bot.cur_score) bot = x;
+    });
+    if (!top) { top = INDS[0]; bot = INDS[INDS.length - 1]; }
     document.getElementById('sumOb').textContent = cnt.ob + ' 个';
     document.getElementById('sumHot').textContent = cnt.hot + ' 个';
     document.getElementById('sumMid').textContent = cnt.mid + ' 个';
@@ -144,73 +181,40 @@
     if (nEl) nEl.textContent = INDS.length;
   }
 
-  /* ---------- 热力总览 (treemap, 按一级分组) ---------- */
-  var heatChart = null;
-  function renderHeatmap() {
-    if (!heatChart) heatChart = makeChart('heatmap');
+  /* ---------- 分组热力条 (31 行: 每行一个申万一级, 行内嵌该组二级格子) ----------
+   * 替代原 treemap(109 散块): 小行业(煤炭/综合仅 1 个二级)在 treemap 里几乎没有视觉存在感,
+   * 名字也挤不下。改为分段条后视觉单元 109 块 -> 31 行, 且板块内部冷热分布一眼可见。
+   * 行序: 按组内最极端偏离度降序(有极值的板块排最前); 格序: 组内按分数升序(冷->热);
+   * 格宽: 成分股数占比(min-width 兜底保证可点)。热力条恒显示全部行业, 不受表格筛选影响。 */
+  function renderHeatBars() {
     var byGroup = {};
     INDS.forEach(function (x) {
       var p = x.parent || '其他';
       if (!byGroup[p]) byGroup[p] = [];
       byGroup[p].push(x);
     });
-    var treeData = GROUPS.map(function (g) {
-      var kids = (byGroup[g.name] || []).map(function (x) {
-        return {
-          name: x.name,
-          value: Math.max(x.n_constituents || 10, 1),
-          code: x.code,
-          score: x.cur_score,
-          state: stateOf(x),
-          itemStyle: { color: stateColor(x) }
-        };
+    var rows = GROUPS.map(function (g) {
+      var kids = (byGroup[g.name] || []).slice().sort(function (a, b) {
+        return num(a.cur_score, 50) - num(b.cur_score, 50);
       });
-      return { name: g.name, children: kids };
-    });
-    heatChart.setOption({
-      animationDuration: 500,
-      tooltip: {
-        backgroundColor: 'rgba(255,255,255,.96)', borderWidth: 0, padding: [8, 10],
-        extraCssText: 'box-shadow:0 6px 24px rgba(16,24,40,.16);border:1px solid rgba(169,139,93,.28);border-radius:10px;font-size:12px;',
-        formatter: function (p) {
-          var d = p.data || {};
-          if (d.score === undefined) return p.name;
-          return '<b>' + p.name + '</b>（' + (d.state || '-') + '）<br/>当前分：<b style="color:'
-            + (ST_COLOR[d.state] || '#98a2b3') + '">' + fmt(d.score) + '</b><br/>成分股：' + d.value + ' 只<br/><span style="color:#98a2b3">点击下钻详情</span>';
-        }
-      },
-      series: [{
-        type: 'treemap',
-        roam: false, nodeClick: false, breadcrumb: { show: false },
-        width: '100%', height: '100%', top: 0, left: 0, right: 0, bottom: 0,
-        label: {
-          show: true, fontSize: 11, color: '#fff',
-          formatter: function (p) {
-            var d = p.data || {};
-            return d.score !== undefined ? (p.name + ' ' + fmt(d.score, 0)) : p.name;
-          }
-        },
-        upperLabel: {
-          show: true, height: 22, color: '#3a4654', fontSize: 12, fontWeight: 600,
-          backgroundColor: 'rgba(244,246,249,.95)', borderColor: '#e3e6ec', borderWidth: 1, borderRadius: 4
-        },
-        itemStyle: { borderColor: '#fff', borderWidth: 2, gapWidth: 2 },
-        levels: [
-          { itemStyle: { borderColor: '#f0f2f6', borderWidth: 3, gapWidth: 3 }, upperLabel: { show: true } },
-          { itemStyle: { borderColor: '#fff', borderWidth: 2, gapWidth: 2 } }
-        ],
-        data: treeData
-      }]
-    }, { notMerge: true });
-    heatChart.off('click');
-    heatChart.on('click', function (p) {
-      var d = p.data || {};
-      if (d.code) {
-        renderDetail(d.code);
-        var el = document.getElementById('detailTitle');
-        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    });
+      var dev = kids.reduce(function (m, x) { return Math.max(m, deviation(x)); }, 0);
+      return { name: g.name, kids: kids, dev: dev };
+    }).sort(function (a, b) { return b.dev - a.dev; });
+
+    var html = rows.map(function (r) {
+      var dim = (curGroup !== '__ALL__' && curGroup !== r.name) ? ' dim' : '';
+      var cells = r.kids.map(function (x) {
+        var w = Number(x.n_constituents) || 10;
+        var st = stateOf(x);
+        return '<div class="hcell' + (x.code === curCode ? ' sel' : '') + '" data-code="' + x.code + '"'
+          + ' style="flex:' + w + ';background:' + stateColor(x) + '"'
+          + ' title="' + x.name + '（' + (x.parent || '-') + '）· ' + st + ' · 当前 ' + fmt(x.cur_score)
+          + ' 分 · 成分股 ' + w + ' 只 · 点击查看详情">' + x.name + '</div>';
+      }).join('');
+      return '<div class="hrow' + dim + '"><div class="hlab">' + r.name
+        + '<span class="hn">' + r.kids.length + '</span></div><div class="hbar">' + cells + '</div></div>';
+    }).join('');
+    document.getElementById('heatBody').innerHTML = html;
   }
 
   /* ---------- 分组筛选 chips ---------- */
@@ -224,10 +228,49 @@
     box.innerHTML = html;
   }
 
+  /* ---------- 状态档位 chips (带计数, 多选; 计数随当前一级分组联动) ---------- */
+  function renderStateChips() {
+    var base = groupBase();
+    var cnt = {};
+    STATE_KEYS.forEach(function (k) { cnt[k] = 0; });
+    base.forEach(function (x) { var s = stateOf(x); if (s in cnt) cnt[s]++; });
+    var keys = STATE_KEYS.filter(function (k) { return selStates[k]; });
+    var allOn = (keys.length === 0 || keys.length === STATE_KEYS.length);
+    var html = '<span class="gchip' + (allOn ? ' on' : '') + '" data-s="__ALL__">全部<span class="n">'
+      + base.length + '</span></span>';
+    STATE_KEYS.forEach(function (k) {
+      html += '<span class="gchip' + (selStates[k] ? ' on' : '') + '" data-s="' + k + '" style="--sc:'
+        + STATE_COLOR[k] + '">' + k + '<span class="n">' + cnt[k] + '</span></span>';
+    });
+    document.getElementById('sChips').innerHTML = html;
+  }
+
   /* ---------- 排名表 ---------- */
   function renderTable() {
     var html = '';
     var list = visibleInds();
+    var base = groupBase();
+    var keys = STATE_KEYS.filter(function (k) { return selStates[k]; });
+    var allOn = (keys.length === 0 || keys.length === STATE_KEYS.length);
+    /* 档位筛选可能筛出空集(如某日全市场无一个非中性行业), 此时退化为全部并如实说明, 不留空表 */
+    var fellBack = false;
+    if (!list.length && !curQ) { list = byDeviation(base); fellBack = true; }
+    var noteEl = document.getElementById('tNote');
+    if (noteEl) {
+      var txt = '显示 <b>' + list.length + '</b> / ' + base.length + ' 个';
+      if (curQ) txt += '（搜索「' + curQ + '」）';
+      else if (fellBack) txt += ' · 当前无符合档位的行业，已显示全部';
+      else if (!allOn) txt += ' · 已折叠 ' + (base.length - list.length) + ' 个中性行业';
+      txt += ' · 按<b>偏离 50 分的极端程度</b>排序，越极端越靠前';
+      if (curGroup !== '__ALL__') txt += ' · 已限定「' + curGroup + '」';
+      noteEl.innerHTML = txt;
+    }
+    if (!list.length) {
+      document.getElementById('rankBody').innerHTML = '<tr><td colspan="16" style="text-align:center;'
+        + 'color:var(--sub);padding:26px">'
+        + (curQ ? '未找到匹配「' + curQ + '」的细分行业' : '当前筛选条件下没有细分行业') + '</td></tr>';
+      return;
+    }
     list.forEach(function (x, i) {
       var s = x.cur_score;
       var chg = x.chg5;
@@ -264,7 +307,8 @@
   }
 
   /* ---------- 单行业详情图（与主看板完全同构） ---------- */
-  var curCode = INDS[0].code;
+  /* 默认详情 = 当前最极端的行业(偏离 50 分最大), 打开即见当日最值得看的一个 */
+  var curCode = INDS.slice().sort(function (a, b) { return deviation(b) - deviation(a); })[0].code;
   function buildDetailOption(x) {
     var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
     var IS_MOBILE = _vw <= 640;
@@ -441,6 +485,12 @@
     for (var r = 0; r < rows.length; r++) {
       rows[r].className = rows[r].getAttribute('data-code') === code ? 'rowclk sel' : 'rowclk';
     }
+    /* 热力条同步高亮(热力条恒显示全部行业, 不受表格筛选影响) */
+    var cells = document.querySelectorAll('#heatBody .hcell');
+    for (var c = 0; c < cells.length; c++) {
+      var on = cells[c].getAttribute('data-code') === code;
+      cells[c].className = on ? 'hcell sel' : 'hcell';
+    }
     var sel = document.getElementById('indSel');
     if (sel && sel.value !== code) sel.value = code;
   }
@@ -546,7 +596,35 @@
       if (!t) return;
       curGroup = t.getAttribute('data-g');
       renderGroupChips();
+      renderStateChips();
+      renderHeatBars();
       renderTable();
+    });
+    document.getElementById('sChips').addEventListener('click', function (e) {
+      var t = e.target;
+      while (t && !(t.classList && t.classList.contains('gchip'))) t = t.parentNode;
+      if (!t) return;
+      var k = t.getAttribute('data-s');
+      if (k === '__ALL__') {
+        STATE_KEYS.forEach(function (kk) { selStates[kk] = 1; });
+      } else {
+        selStates[k] = selStates[k] ? 0 : 1;
+      }
+      renderStateChips();
+      renderTable();
+    });
+    var qEl = document.getElementById('qSearch');
+    if (qEl) qEl.addEventListener('input', function () { curQ = qEl.value || ''; renderTable(); });
+    var hb = document.getElementById('heatBody');
+    if (hb) hb.addEventListener('click', function (e) {
+      var t = e.target;
+      while (t && !(t.classList && t.classList.contains('hcell'))) t = t.parentNode;
+      if (!t) return;
+      var code = t.getAttribute('data-code');
+      if (!code) return;
+      renderDetail(code);
+      var el = document.getElementById('detailTitle');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     window.addEventListener('resize', function () { charts.forEach(function (c) { c.resize(); }); });
     window.addEventListener('orientationchange', function () { setTimeout(function () { if (detailChart) renderDetail(curCode); }, 250); });
@@ -554,8 +632,9 @@
 
   renderQuality();
   renderSummary();
-  renderHeatmap();
   renderGroupChips();
+  renderStateChips();
+  renderHeatBars();
   renderTable();
   renderBacktest();
   bindEvents();
