@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, shrink-to-fit=no"/>
-<title>A股全行业超买超卖趋势看板（专业版）</title>
+<title>A股细分行业超买超卖看板（申万二级 · 专业版）</title>
 <style>
   :root {
     --fs-title: 23px; --fs-h: 16px; --fs-text: 13px; --fs-small: 12px;
@@ -27,7 +27,6 @@
       linear-gradient(180deg, #f5f7fa 0%, #e9edf3 100%); }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 52px; }
 
-  /* ---------- 入场动画 ---------- */
   @keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
   .hero, .card, .disc { animation: riseIn .55s var(--ease) both; }
   .grid6 > .metric { animation: riseIn .5s var(--ease) both; }
@@ -38,7 +37,6 @@
   .grid6 > .metric:nth-child(5) { animation-delay: .20s; }
   .grid6 > .metric:nth-child(6) { animation-delay: .24s; }
 
-  /* ---------- 页头 hero（沉稳墨蓝 + 暗金细条 + 纹理） ---------- */
   .hero { position: relative; overflow: hidden; color: #f4f1ea;
     background:
       radial-gradient(620px 220px at 86% -10%, rgba(169,139,93,.20), transparent 70%),
@@ -61,7 +59,6 @@
   .hero .sub a { color: #c8a86a; text-decoration: none; border-bottom: 1px dashed rgba(200,168,106,.5); }
   .hero .sub a:hover { color: #e8cf9a; }
 
-  /* ---------- 卡片 ---------- */
   .card { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow-sm);
     transition: transform .25s var(--ease), box-shadow .25s var(--ease); }
@@ -74,9 +71,7 @@
     background: linear-gradient(180deg, var(--gold), var(--gold-d)); box-shadow: 0 1px 3px rgba(169,139,93,.4); }
   .card h2 .note { font-weight: 400; color: var(--sub); font-size: 12px; margin-left: auto; letter-spacing: 0; }
 
-  /* ---------- 指标块 ---------- */
   .grid6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
-  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
   .metric { position: relative; overflow: hidden; border: 1px solid var(--line); border-top: 3px solid var(--mc, #41617e);
     border-radius: var(--radius-sm); padding: 13px 14px;
     background: linear-gradient(180deg, color-mix(in srgb, var(--mc, #41617e) 7%, #fff), #fff);
@@ -90,7 +85,16 @@
   .metric .v { font-size: 20px; font-weight: 700; margin-top: 6px; line-height: 1.1;
     font-variant-numeric: tabular-nums; letter-spacing: .4px; }
 
-  /* ---------- 表格 ---------- */
+  /* ---------- 一级分组筛选 chips ---------- */
+  .gchips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .gchip { padding: 4px 13px; border-radius: 999px; border: 1px solid var(--line); background: #fff;
+    color: var(--ink-2); font-size: 12px; cursor: pointer; user-select: none;
+    transition: all .18s var(--ease); }
+  .gchip:hover { border-color: var(--blue); color: var(--blue); }
+  .gchip.on { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(65,97,126,.3); }
+  .gchip .n { opacity: .62; font-size: 10.5px; margin-left: 3px; }
+
   table { width: 100%; border-collapse: separate; border-spacing: 0;
     font-size: 12px; font-variant-numeric: tabular-nums; }
   th, td { padding: 9px 11px; text-align: right; border-bottom: 1px solid #f0f2f6; white-space: nowrap; }
@@ -99,6 +103,7 @@
     position: sticky; top: 0; box-shadow: inset 0 -2px 0 var(--gold-soft); }
   td.lft, th.lft { text-align: left; }
   td.rank { color: var(--sub); }
+  td.c-parent { color: var(--sub); font-size: 11px; }
   tbody tr { transition: background .18s ease; }
   tbody tr:nth-child(even) td { background: #fafbfc; }
   tr.rowclk { cursor: pointer; }
@@ -110,7 +115,7 @@
     color: #fff; font-size: 11px; font-weight: 600; text-align: center; letter-spacing: .3px;
     box-shadow: 0 1px 3px rgba(33,43,54,.18); }
 
-  .twrap { overflow-x: auto; max-height: 480px; overflow-y: auto; border-radius: 10px; border: 1px solid #eef0f3; }
+  .twrap { overflow-x: auto; max-height: 560px; overflow-y: auto; border-radius: 10px; border: 1px solid #eef0f3; }
   .twrap::-webkit-scrollbar { width: 9px; height: 9px; }
   .twrap::-webkit-scrollbar-thumb { background: #cfd5dd; border-radius: 6px; border: 2px solid #fff; }
   .twrap::-webkit-scrollbar-thumb:hover { background: #b9c1cb; }
@@ -137,17 +142,17 @@
   .tag-os { color: #3c8168; font-weight: 700; }
   .tag-na { color: #98a2b3; }
 
+  #heatmap { width: 100%; height: 480px; }
+
   @media (max-width: 820px) {
     .grid6 { grid-template-columns: repeat(3, 1fr); }
-    .grid3 { grid-template-columns: repeat(1, 1fr); }
     .hero { padding: 20px 18px; }
     .hero h1 { font-size: 18px; }
     .wrap { padding: 14px 10px 40px; }
     .card { padding: 14px 14px; }
+    #heatmap { height: 420px; }
   }
 
-  /* ================= 手机端深度优化 ================= */
-  /* 主断点 ≤640：竖屏手机；小手机 ≤420 进一步收紧 */
   @media (max-width: 640px) {
     .wrap { padding: 12px 8px 34px; }
     .hero { padding: 18px 15px; border-radius: 14px; }
@@ -158,12 +163,11 @@
     .card h2 { font-size: 15px; margin-bottom: 11px; }
     .card h2 .note { font-size: 11px; }
     .grid6 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-    .grid3 { grid-template-columns: repeat(1, 1fr); }
     .metric { padding: 11px 12px; border-radius: 11px; }
     .metric .v { font-size: 18px; }
     .metric .v[style*="15px"] { font-size: 13px !important; }
+    #heatmap { height: 380px; }
 
-    /* 排名表：精简次要列 + 行业名列左吸顶常驻，横向滚动只留核心 */
     .twrap { max-height: none; border-radius: 8px; -webkit-overflow-scrolling: touch; }
     table { font-size: 11px; }
     th, td { padding: 8px 8px; }
@@ -174,11 +178,9 @@
     tbody tr:nth-child(even) td.c-name { background: #fafbfc; }
     tr.sel td.c-name { background: rgba(65,97,126,.12) !important; }
 
-    /* 回测表：隐藏最占宽的说明列 */
     .bt th, .bt td { padding: 7px 7px; font-size: 11px; }
     .bt .c-bt-note { display: none; }
 
-    /* 详情图与标题 */
     #detail { height: 400px; }
     #detailTitle { font-size: 13px; line-height: 1.45; word-break: break-word; }
     #indSel { max-width: 100%; font-size: 12px; }
@@ -199,9 +201,9 @@
     .disc { font-size: 9.5px; }
     #detail { height: 340px; }
     #detailTitle { font-size: 12px; }
+    #heatmap { height: 330px; }
   }
 
-  /* 刘海屏安全区（iPhone 全面屏等） */
   @supports (padding: env(safe-area-inset-top)) {
     .wrap { padding-top: max(12px, env(safe-area-inset-top));
             padding-left: max(8px, env(safe-area-inset-left));
@@ -212,26 +214,39 @@
 <body>
 <div class="wrap">
   <div class="hero">
-    <h1>A股全行业超买超卖趋势看板 <span class="badge-v">专业版</span><span class="accent-line"></span></h1>
-    <div class="sub">申万一级 <b>31</b> 个行业 · 近 5 年日K · 数据截至 <b id="asofTxt">-</b> 收盘 · 数据源：腾讯行情（申万一级行业指数）· 基准：沪深300 · <a href="sub.html">细分行业看板（申万二级 109 个）→</a></div>
+    <h1>A股细分行业超买超卖看板 <span class="badge-v">申万二级 · 专业版</span><span class="accent-line"></span></h1>
+    <div class="sub">申万二级 <b id="nIndTxt">109</b> 个细分行业（剔除成分股&lt;10 的微型行业）· 近 5 年日K · 数据截至 <b id="asofTxt">-</b> 收盘 · 基准：沪深300 · 与主看板同一套 PIT/回测/校准口径 · <a href="index.html">← 返回申万一级主看板</a></div>
   </div>
 
-  <!-- 模块排序：按重要性+关联度 → 决策簇(概览→排名→下钻) → 方法可信度 → 前置门禁 -->
   <div class="grid6">
     <div class="metric" style="--mc:var(--red)"><div class="k">超买 (≥阈值)</div><div class="v" id="sumOb" style="color:var(--red)">-</div></div>
     <div class="metric" style="--mc:var(--orange)"><div class="k">偏热</div><div class="v" id="sumHot" style="color:var(--orange)">-</div></div>
     <div class="metric" style="--mc:var(--blue)"><div class="k">中性</div><div class="v" id="sumMid" style="color:var(--blue)">-</div></div>
     <div class="metric" style="--mc:var(--green)"><div class="k">偏冷/超卖</div><div class="v" id="sumOs" style="color:var(--green)">-</div></div>
-    <div class="metric" style="--mc:var(--red)"><div class="k">最超买行业</div><div class="v" id="sumTop" style="color:var(--red);font-size:15px">-</div></div>
-    <div class="metric" style="--mc:var(--green)"><div class="k">最超卖行业</div><div class="v" id="sumBot" style="color:var(--green);font-size:15px">-</div></div>
+    <div class="metric" style="--mc:var(--red)"><div class="k">最超买细分</div><div class="v" id="sumTop" style="color:var(--red);font-size:15px">-</div></div>
+    <div class="metric" style="--mc:var(--green)"><div class="k">最超卖细分</div><div class="v" id="sumBot" style="color:var(--green);font-size:15px">-</div></div>
   </div>
 
   <div class="card">
-    <h2>行业当前状态排名 <span class="note">（点击任意行切换下方详情图）</span></h2>
+    <h2>细分行业热力总览 <span class="note">块大小=成分股数，颜色=当前超买超卖分（点击块下钻详情）</span></h2>
+    <div id="heatmap"></div>
+    <div class="note legend-bar" style="margin-top:6px">
+      <span class="legend-dot" style="background:#b1493f"></span>超买（危险）
+      <span class="legend-dot" style="background:#c08a3e"></span>偏热
+      <span class="legend-dot" style="background:#41617e"></span>中性
+      <span class="legend-dot" style="background:#5f9b86"></span>偏冷
+      <span class="legend-dot" style="background:#3c8168"></span>超卖（机会）
+      按所属申万一级行业分区
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>细分行业当前状态排名 <span class="note">（点击分组筛选，点击任意行切换下方详情图）</span></h2>
+    <div class="gchips" id="gChips"></div>
     <div class="twrap">
       <table>
         <thead><tr>
-          <th class="c-rank">#</th><th class="lft c-name">行业</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
+          <th class="c-rank">#</th><th class="lft c-name">细分行业</th><th class="lft c-parent">所属一级</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
           <th class="c-rs">相对强度<br/>分位</th><th class="c-above">站上<br/>200日</th><th class="c-fdr">FDR显著</th><th class="c-div">背离</th>
           <th class="c-chg5">5日变动</th><th class="c-ret20">20日</th><th class="c-ret60">60日</th><th class="c-ret250">250日</th><th class="c-fc">推演30日<br/>中位</th>
         </tr></thead>
@@ -259,7 +274,7 @@
   </div>
 
   <div class="card">
-    <h2>推演有效性回测（walk-forward · 无重叠样本 · 块级检验）<span class="note">对比五类基准，含最难打败的"持平"基线</span></h2>
+    <h2>推演有效性回测（walk-forward · 无重叠样本 · 块级检验）<span class="note">109 个细分行业全样本回测，与主看板同一口径</span></h2>
     <table class="bt">
       <thead><tr>
         <th class="lft">方法</th><th>方向准确率</th><th>块级 t / p</th>
@@ -277,11 +292,6 @@
     <div class="grid6" id="qGrid"></div>
     <div class="note" id="qNote" style="margin-top:8px"></div>
   </div>
-
-
-
-
-
 
   <div class="disc">
     <b>免责声明</b>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。

@@ -1,299 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, shrink-to-fit=no"/>
-<title>A股全行业超买超卖趋势看板（专业版）</title>
-<style>
-  :root {
-    --fs-title: 23px; --fs-h: 16px; --fs-text: 13px; --fs-small: 12px;
-    --ink: #212b36; --ink-2: #3a4654; --sub: #6c7884; --line: #e3e6ec; --bg: #eceef1; --card: #ffffff;
-    --red: #b1493f; --green: #3c8168; --blue: #41617e; --purple: #7c6f99; --orange: #c08a3e;
-    --gold: #a98b5d; --gold-d: #8a7048; --gold-soft: rgba(169,139,93,.14);
-    --shadow-sm: 0 1px 2px rgba(33,43,54,.04), 0 6px 18px rgba(33,43,54,.05);
-    --shadow-md: 0 2px 6px rgba(33,43,54,.06), 0 16px 40px rgba(33,43,54,.09);
-    --radius: 16px; --radius-sm: 12px;
-    --ease: cubic-bezier(.22,.61,.36,1);
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body { margin: 0; color: var(--ink); overflow-x: hidden;
-    -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
-    min-height: 100vh; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
-    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
-    font-size: var(--fs-text);
-    background:
-      radial-gradient(1200px 560px at 50% -12%, rgba(65,97,126,.07), transparent 62%),
-      linear-gradient(180deg, #f5f7fa 0%, #e9edf3 100%); }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 52px; }
-
-  /* ---------- 入场动画 ---------- */
-  @keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-  .hero, .card, .disc { animation: riseIn .55s var(--ease) both; }
-  .grid6 > .metric { animation: riseIn .5s var(--ease) both; }
-  .grid6 > .metric:nth-child(1) { animation-delay: .04s; }
-  .grid6 > .metric:nth-child(2) { animation-delay: .08s; }
-  .grid6 > .metric:nth-child(3) { animation-delay: .12s; }
-  .grid6 > .metric:nth-child(4) { animation-delay: .16s; }
-  .grid6 > .metric:nth-child(5) { animation-delay: .20s; }
-  .grid6 > .metric:nth-child(6) { animation-delay: .24s; }
-
-  /* ---------- 页头 hero（沉稳墨蓝 + 暗金细条 + 纹理） ---------- */
-  .hero { position: relative; overflow: hidden; color: #f4f1ea;
-    background:
-      radial-gradient(620px 220px at 86% -10%, rgba(169,139,93,.20), transparent 70%),
-      linear-gradient(135deg, #2c3643 0%, #1d2732 100%);
-    border: 1px solid #1a222c; border-radius: 18px;
-    padding: 26px 30px 24px; margin-bottom: 20px; box-shadow: var(--shadow-md); }
-  .hero::before { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: .5;
-    background: repeating-linear-gradient(135deg, rgba(255,255,255,.022) 0 2px, transparent 2px 10px); }
-  .hero::after { content: ''; position: absolute; left: 0; top: 0; right: 0; height: 3px;
-    background: linear-gradient(90deg, #c8a86a, var(--gold) 42%, rgba(169,139,93,.12)); }
-  .hero h1 { position: relative; font-size: var(--fs-title); margin: 0; font-weight: 700;
-    letter-spacing: 1.5px; color: #f7f4ed; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-  .hero h1 .accent-line { display: block; width: 46px; height: 3px; border-radius: 2px; margin-top: 11px;
-    background: linear-gradient(90deg, #c8a86a, var(--gold)); }
-  .hero h1 .badge-v { font-size: 11px; font-weight: 500; letter-spacing: .5px;
-    border: 1px solid rgba(190,169,128,.55); color: var(--gold);
-    padding: 2px 11px; border-radius: 999px; vertical-align: middle; background: rgba(169,139,93,.08); }
-  .hero .sub { position: relative; color: #aeb8c4; font-size: 12.5px; margin: 6px 0 0; line-height: 1.95; letter-spacing: .3px; }
-  .hero .sub b { color: #eef1f5; font-weight: 600; }
-  .hero .sub a { color: #c8a86a; text-decoration: none; border-bottom: 1px dashed rgba(200,168,106,.5); }
-  .hero .sub a:hover { color: #e8cf9a; }
-
-  /* ---------- 卡片 ---------- */
-  .card { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow-sm);
-    transition: transform .25s var(--ease), box-shadow .25s var(--ease); }
-  .card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
-  .card::before { content: ''; position: absolute; left: 0; top: 0; right: 0; height: 2px;
-    background: linear-gradient(90deg, var(--gold), rgba(169,139,93,.16)); opacity: .9; }
-  .card h2 { font-size: var(--fs-h); margin: 0 0 14px; font-weight: 700; letter-spacing: .3px;
-    display: flex; align-items: center; gap: 10px; color: var(--ink); }
-  .card h2::before { content: ''; width: 4px; height: 17px; border-radius: 3px;
-    background: linear-gradient(180deg, var(--gold), var(--gold-d)); box-shadow: 0 1px 3px rgba(169,139,93,.4); }
-  .card h2 .note { font-weight: 400; color: var(--sub); font-size: 12px; margin-left: auto; letter-spacing: 0; }
-
-  /* ---------- 指标块 ---------- */
-  .grid6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
-  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .metric { position: relative; overflow: hidden; border: 1px solid var(--line); border-top: 3px solid var(--mc, #41617e);
-    border-radius: var(--radius-sm); padding: 13px 14px;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--mc, #41617e) 7%, #fff), #fff);
-    box-shadow: 0 1px 2px rgba(33,43,54,.04);
-    transition: transform .2s var(--ease), box-shadow .2s var(--ease), border-color .2s; }
-  .metric::after { content: ''; position: absolute; right: -16px; top: -16px; width: 52px; height: 52px; border-radius: 50%;
-    background: radial-gradient(circle, color-mix(in srgb, var(--mc, #41617e) 16%, transparent), transparent 70%); opacity: .7; }
-  .metric:hover { transform: translateY(-3px); box-shadow: 0 8px 22px rgba(33,43,54,.10);
-    border-color: color-mix(in srgb, var(--mc, #41617e) 40%, var(--line)); }
-  .metric .k { font-size: 11.5px; color: var(--sub); letter-spacing: .3px; }
-  .metric .v { font-size: 20px; font-weight: 700; margin-top: 6px; line-height: 1.1;
-    font-variant-numeric: tabular-nums; letter-spacing: .4px; }
-
-  /* ---------- 表格 ---------- */
-  table { width: 100%; border-collapse: separate; border-spacing: 0;
-    font-size: 12px; font-variant-numeric: tabular-nums; }
-  th, td { padding: 9px 11px; text-align: right; border-bottom: 1px solid #f0f2f6; white-space: nowrap; }
-  th { color: #5f6c79; font-weight: 600; font-size: 11.5px; letter-spacing: .3px;
-    background: rgba(244,246,249,.92); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-    position: sticky; top: 0; box-shadow: inset 0 -2px 0 var(--gold-soft); }
-  td.lft, th.lft { text-align: left; }
-  td.rank { color: var(--sub); }
-  tbody tr { transition: background .18s ease; }
-  tbody tr:nth-child(even) td { background: #fafbfc; }
-  tr.rowclk { cursor: pointer; }
-  tr.rowclk:hover td { background: rgba(65,97,126,.07); }
-  tr.sel td { background: rgba(65,97,126,.12) !important; }
-  tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--blue); }
-
-  .chip { display: inline-block; min-width: 36px; padding: 3px 10px; border-radius: 999px;
-    color: #fff; font-size: 11px; font-weight: 600; text-align: center; letter-spacing: .3px;
-    box-shadow: 0 1px 3px rgba(33,43,54,.18); }
-
-  .twrap { overflow-x: auto; max-height: 480px; overflow-y: auto; border-radius: 10px; border: 1px solid #eef0f3; }
-  .twrap::-webkit-scrollbar { width: 9px; height: 9px; }
-  .twrap::-webkit-scrollbar-thumb { background: #cfd5dd; border-radius: 6px; border: 2px solid #fff; }
-  .twrap::-webkit-scrollbar-thumb:hover { background: #b9c1cb; }
-  select { font-size: var(--fs-text); padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
-    background: #fff; color: var(--ink); outline: none; transition: box-shadow .15s, border-color .15s; }
-  select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(65,97,126,.16); }
-
-  .note { color: var(--sub); font-size: var(--fs-small); line-height: 1.85; }
-  #fcNote { color: var(--sub); font-size: var(--fs-small); margin-top: 8px; line-height: 1.85; }
-  .legend-bar { background: #f7f8fa; border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px 12px; margin-top: 10px; }
-  .disc { background: linear-gradient(180deg, #fbfbf9, #f6f7f4); border: 1px solid var(--line);
-    border-left: 3px solid var(--gold); border-radius: 12px; padding: 14px 16px;
-    color: #8a8f98; font-size: 11px; line-height: 1.9; margin-top: 20px; box-shadow: var(--shadow-sm); }
-  .disc b { color: var(--ink-2); }
-  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin: 0 5px 0 14px; vertical-align: middle; }
-
-  .bt td:first-child { font-weight: 700; text-align: left; }
-  .bt tr.hl td { background: rgba(65,97,126,.10); }
-  .bt tr.main td { background: var(--gold-soft); }
-  .bt tr.main td:first-child { box-shadow: inset 3px 0 0 var(--gold); }
-  .bt .hl { color: var(--blue); font-weight: 700; }
-  .tag-sig { color: #b1493f; font-weight: 700; }
-  .tag-os { color: #3c8168; font-weight: 700; }
-  .tag-na { color: #98a2b3; }
-
-  @media (max-width: 820px) {
-    .grid6 { grid-template-columns: repeat(3, 1fr); }
-    .grid3 { grid-template-columns: repeat(1, 1fr); }
-    .hero { padding: 20px 18px; }
-    .hero h1 { font-size: 18px; }
-    .wrap { padding: 14px 10px 40px; }
-    .card { padding: 14px 14px; }
-  }
-
-  /* ================= 手机端深度优化 ================= */
-  /* 主断点 ≤640：竖屏手机；小手机 ≤420 进一步收紧 */
-  @media (max-width: 640px) {
-    .wrap { padding: 12px 8px 34px; }
-    .hero { padding: 18px 15px; border-radius: 14px; }
-    .hero h1 { font-size: 17px; letter-spacing: .5px; gap: 7px; }
-    .hero h1 .accent-line { margin-top: 8px; width: 38px; }
-    .hero .sub { font-size: 11.5px; line-height: 1.8; }
-    .card { padding: 13px 12px; margin-bottom: 14px; border-radius: 14px; }
-    .card h2 { font-size: 15px; margin-bottom: 11px; }
-    .card h2 .note { font-size: 11px; }
-    .grid6 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-    .grid3 { grid-template-columns: repeat(1, 1fr); }
-    .metric { padding: 11px 12px; border-radius: 11px; }
-    .metric .v { font-size: 18px; }
-    .metric .v[style*="15px"] { font-size: 13px !important; }
-
-    /* 排名表：精简次要列 + 行业名列左吸顶常驻，横向滚动只留核心 */
-    .twrap { max-height: none; border-radius: 8px; -webkit-overflow-scrolling: touch; }
-    table { font-size: 11px; }
-    th, td { padding: 8px 8px; }
-    .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr, .c-div { display: none; }
-    th.c-name, td.c-name { position: sticky; left: 0; z-index: 2;
-      background: #fff; box-shadow: 1px 0 0 var(--line); }
-    thead th.c-name { background: rgba(244,246,249,.98); }
-    tbody tr:nth-child(even) td.c-name { background: #fafbfc; }
-    tr.sel td.c-name { background: rgba(65,97,126,.12) !important; }
-
-    /* 回测表：隐藏最占宽的说明列 */
-    .bt th, .bt td { padding: 7px 7px; font-size: 11px; }
-    .bt .c-bt-note { display: none; }
-
-    /* 详情图与标题 */
-    #detail { height: 400px; }
-    #detailTitle { font-size: 13px; line-height: 1.45; word-break: break-word; }
-    #indSel { max-width: 100%; font-size: 12px; }
-    .legend-bar { font-size: 10px; padding: 9px 10px; line-height: 1.8; }
-    .disc { font-size: 10px; padding: 12px 13px; }
-  }
-
-  @media (max-width: 420px) {
-    .wrap { padding: 10px 6px 30px; }
-    .hero h1 { font-size: 15.5px; }
-    .grid6 { gap: 7px; }
-    .metric .v { font-size: 16px; }
-    .card { padding: 12px 10px; }
-    .card h2 .note { display: block; margin: 6px 0 0; font-size: 11px; }
-    table { font-size: 10.5px; }
-    th, td { padding: 7px 6px; }
-    .legend-bar { font-size: 9.5px; }
-    .disc { font-size: 9.5px; }
-    #detail { height: 340px; }
-    #detailTitle { font-size: 12px; }
-  }
-
-  /* 刘海屏安全区（iPhone 全面屏等） */
-  @supports (padding: env(safe-area-inset-top)) {
-    .wrap { padding-top: max(12px, env(safe-area-inset-top));
-            padding-left: max(8px, env(safe-area-inset-left));
-            padding-right: max(8px, env(safe-area-inset-right)); }
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div class="hero">
-    <h1>A股全行业超买超卖趋势看板 <span class="badge-v">专业版</span><span class="accent-line"></span></h1>
-    <div class="sub">申万一级 <b>31</b> 个行业 · 近 5 年日K · 数据截至 <b id="asofTxt">-</b> 收盘 · 数据源：腾讯行情（申万一级行业指数）· 基准：沪深300 · <a href="sub.html">细分行业看板（申万二级 109 个）→</a></div>
-  </div>
-
-  <!-- 模块排序：按重要性+关联度 → 决策簇(概览→排名→下钻) → 方法可信度 → 前置门禁 -->
-  <div class="grid6">
-    <div class="metric" style="--mc:var(--red)"><div class="k">超买 (≥阈值)</div><div class="v" id="sumOb" style="color:var(--red)">-</div></div>
-    <div class="metric" style="--mc:var(--orange)"><div class="k">偏热</div><div class="v" id="sumHot" style="color:var(--orange)">-</div></div>
-    <div class="metric" style="--mc:var(--blue)"><div class="k">中性</div><div class="v" id="sumMid" style="color:var(--blue)">-</div></div>
-    <div class="metric" style="--mc:var(--green)"><div class="k">偏冷/超卖</div><div class="v" id="sumOs" style="color:var(--green)">-</div></div>
-    <div class="metric" style="--mc:var(--red)"><div class="k">最超买行业</div><div class="v" id="sumTop" style="color:var(--red);font-size:15px">-</div></div>
-    <div class="metric" style="--mc:var(--green)"><div class="k">最超卖行业</div><div class="v" id="sumBot" style="color:var(--green);font-size:15px">-</div></div>
-  </div>
-
-  <div class="card">
-    <h2>行业当前状态排名 <span class="note">（点击任意行切换下方详情图）</span></h2>
-    <div class="twrap">
-      <table>
-        <thead><tr>
-          <th class="c-rank">#</th><th class="lft c-name">行业</th><th class="c-score">当前分</th><th class="c-state">状态</th><th class="c-sig">综合信号</th><th class="c-vol">量能</th>
-          <th class="c-rs">相对强度<br/>分位</th><th class="c-above">站上<br/>200日</th><th class="c-fdr">FDR显著</th><th class="c-div">背离</th>
-          <th class="c-chg5">5日变动</th><th class="c-ret20">20日</th><th class="c-ret60">60日</th><th class="c-ret250">250日</th><th class="c-fc">推演30日<br/>中位</th>
-        </tr></thead>
-        <tbody id="rankBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>
-      <select id="indSel"></select>
-      <span id="detailTitle" style="margin-left:8px"></span>
-    </h2>
-    <div id="detail" style="width:100%;height:500px;"></div>
-    <div id="fcNote">-</div>
-    <div class="note legend-bar" style="margin-top:6px">
-      <span class="legend-dot" style="background:#b1493f"></span>超买（危险）
-      <span class="legend-dot" style="background:#c08a3e"></span>偏热
-      <span class="legend-dot" style="background:#41617e"></span>中性
-      <span class="legend-dot" style="background:#3c8168"></span>超卖（机会）
-      <span class="legend-dot" style="background:#7c6f99"></span>相对强度分位（vs 沪深300）
-      <span class="legend-dot" style="background:rgba(65,97,126,0.22)"></span>未来30日推演区间（P25-P75，已校准）
-      <span class="legend-dot" style="background:repeating-linear-gradient(90deg,#b1493f 0 3px,transparent 3px 6px)"></span>动态超买线（PIT，随时间变化）
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>推演有效性回测（walk-forward · 无重叠样本 · 块级检验）<span class="note">对比五类基准，含最难打败的"持平"基线</span></h2>
-    <table class="bt">
-      <thead><tr>
-        <th class="lft">方法</th><th>方向准确率</th><th>块级 t / p</th>
-        <th>覆盖率<br/>校准前→后</th><th>终点 MAE</th><th>路径 RMSE</th>
-        <th>DM 检验<br/>vs 类比池</th><th>样本</th><th class="lft">说明</th>
-      </tr></thead>
-      <tbody id="btBody"></tbody>
-    </table>
-    <div class="note" id="btNote" style="margin-top:8px"></div>
-  </div>
-
-  <div class="card" id="qCard">
-    <h2>数据质量门禁 <span class="note">每次刷新自动体检：对不齐/缺失/重复/滞后一律先报错，再算指标</span>
-      <span id="qBadge" class="chip" style="background:#98a2b3;margin-left:6px">-</span></h2>
-    <div class="grid6" id="qGrid"></div>
-    <div class="note" id="qNote" style="margin-top:8px"></div>
-  </div>
-
-
-
-
-
-
-  <div class="disc">
-    <b>免责声明</b>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。
-  </div>
-</div>
-<script src="echarts.min.js"></script>
-<script src="data.js"></script>
-<script>
-/* A股全行业超买超卖趋势看板（专业版 v5 · 准确性工程） - 前端逻辑
- * 依赖全局: DATA (industry_obos.json), echarts
+/* A股细分行业超买超卖看板（申万二级 109 个 · 专业版 v5） - 前端逻辑
+ * 依赖全局: DATA (sub_obos.json), echarts
+ * 与主看板 app.js 同源: PIT 阈值时序 / 无重叠回测 + 块级检验 / 覆盖率校准区间
+ * 新增: 一级分组热力总览(treemap) + 分组筛选 chips + 表格"所属一级"列
  * 红=超买=危险, 绿=超卖=机会 (A股红涨绿跌约定)
- * v5: PIT 阈值时序 / 无重叠回测 + 块级检验 / 覆盖率校准区间 / 权重显著性收缩 / 数据质量门禁
  */
 (function () {
   'use strict';
@@ -309,8 +18,7 @@
     if (typeof v !== 'number' || !isFinite(v)) return '-';
     return v.toFixed(d === undefined ? 1 : d);
   }
-  /* 状态口径统一：一律使用后端按 PIT 动态阈值(ob_line/os_line)判定的 x.state，
-   * 不再用固定 80/65/35/20 —— 否则排名表会说"偏热"而同一行业在图上已越过超买线。 */
+  /* 状态口径统一：一律使用后端按 PIT 动态阈值(ob_line/os_line)判定的 x.state */
   var ST_COLOR = { '超买': COLORS.ob, '偏热': COLORS.hot, '中性': COLORS.mid, '偏冷': COLORS.cold, '超卖': COLORS.os };
   function stateOf(x) {
     if (x && typeof x === 'object') {
@@ -347,12 +55,10 @@
   }
 
   var INDS = DATA.industries;
-  var DETAIL_DEFAULT_DAYS = 250; // 详情图默认展示最近约 1 年交易日（A股约 244-250 个交易日/年）+ 推演段
+  var DETAIL_DEFAULT_DAYS = 250;
   var charts = [];
   function makeChart(id) { var c = echarts.init(document.getElementById(id), null, { renderer: 'svg' }); charts.push(c); return c; }
   var detailChart = null;
-  /* F: dataZoom 双击复位 (契合用户偏好: 缩略条拖手柄缩放/拖窗口平移/双击复位)
-   * 双击在「默认窗口(最近约1年+推演段)」与「全量历史」间切换, 给走势图一个明确的一键复位入口 */
   var DETAIL_ZOOM = { showStart: null, showEnd: null, isFull: false };
   function resetZoom() {
     DETAIL_ZOOM.isFull = !DETAIL_ZOOM.isFull;
@@ -361,6 +67,23 @@
       startValue: DETAIL_ZOOM.isFull ? 0 : DETAIL_ZOOM.showStart,
       endValue: DETAIL_ZOOM.showEnd
     });
+  }
+
+  /* ---------- 一级分组（保持申万一级官方顺序, 按出现次序） ---------- */
+  var GROUPS = [];
+  (function () {
+    var seen = {};
+    INDS.forEach(function (x) {
+      var p = x.parent || '其他';
+      if (!seen[p]) { seen[p] = { name: p, n: 0 }; GROUPS.push(seen[p]); }
+      seen[p].n++;
+    });
+  })();
+  var curGroup = '__ALL__';
+
+  function visibleInds() {
+    if (curGroup === '__ALL__') return INDS;
+    return INDS.filter(function (x) { return (x.parent || '其他') === curGroup; });
   }
 
   /* ---------- 数据质量门禁 ---------- */
@@ -373,7 +96,7 @@
     badge.textContent = q.status;
     badge.style.background = color;
     var items = [
-      ['行业 / 交易日', q.n_industries + ' × ' + q.n_dates],
+      ['细分行业 / 交易日', q.n_industries + ' × ' + q.n_dates],
       ['日历对齐覆盖率', pct(q.align_coverage)],
       ['缺失单元格', q.missing_cells],
       ['重复日期', q.dup_dates],
@@ -388,17 +111,21 @@
     }).join('');
     var issues = (q.issues && q.issues.length)
       ? '<b style="color:' + color + '">发现 ' + q.issues.length + ' 项问题：</b>' + q.issues.join('；')
-      : '<b style="color:#3c8168">全部通过</b>：31 个行业与基准逐日对齐，无缺失、无重复日期、无异常价量，数据为最新交易日收盘。';
+      : '<b style="color:#3c8168">全部通过</b>：' + q.n_industries + ' 个细分行业与基准逐日对齐，无缺失、无重复日期、无异常价量，数据为最新交易日收盘。';
+    // [2026-09-03] 指数口径真空期如实披露: 个别二级指数在申万2021版生效(2021-12-13)前无逐日数据
+    var vac = q.prefix_vacuum || {};
+    var vacKeys = Object.keys(vac);
+    if (vacKeys.length) {
+      issues += '<br/><b style="color:#c08a3e">口径真空期披露</b>：' + vacKeys.map(function (k) {
+        return vac[k].name + ' 在 ' + vac[k].valid_from + ' 前无逐日数据（申万2021版分类生效前，共 ' + vac[k].cells + ' 个交易日），该段指标为空、不进入回测';
+      }).join('；') + '。';
+    }
     document.getElementById('qNote').innerHTML = issues
-      + ' 覆盖区间 <b>' + q.span[0] + ' ~ ' + q.span[1] + '</b>。未来交易日按国务院法定节假日安排推算，官方日历已确定至 <b>'
-      + (q.calendar_official_until || '-') + '</b>（此后仅含元旦/劳动节/国庆固定段，长假边界可能有 1-2 日误差）。';
+      + ' 覆盖区间 <b>' + q.span[0] + ' ~ ' + q.span[1] + '</b>。';
   }
 
-  /* ---------- 准确性修正清单 ---------- */
-  
-
   /* ---------- 首屏摘要 ---------- */
-    function renderSummary() {
+  function renderSummary() {
     var cnt = { ob: 0, hot: 0, mid: 0, cold: 0, os: 0 };
     var KEY = { '超买': 'ob', '偏热': 'hot', '中性': 'mid', '偏冷': 'cold', '超卖': 'os' };
     INDS.forEach(function (x) {
@@ -413,16 +140,95 @@
     document.getElementById('sumTop').textContent = top.name + ' ' + fmt(top.cur_score);
     document.getElementById('sumBot').textContent = bot.name + ' ' + fmt(bot.cur_score);
     document.getElementById('asofTxt').textContent = DATA.asof;
+    var nEl = document.getElementById('nIndTxt');
+    if (nEl) nEl.textContent = INDS.length;
   }
 
+  /* ---------- 热力总览 (treemap, 按一级分组) ---------- */
+  var heatChart = null;
+  function renderHeatmap() {
+    if (!heatChart) heatChart = makeChart('heatmap');
+    var byGroup = {};
+    INDS.forEach(function (x) {
+      var p = x.parent || '其他';
+      if (!byGroup[p]) byGroup[p] = [];
+      byGroup[p].push(x);
+    });
+    var treeData = GROUPS.map(function (g) {
+      var kids = (byGroup[g.name] || []).map(function (x) {
+        return {
+          name: x.name,
+          value: Math.max(x.n_constituents || 10, 1),
+          code: x.code,
+          score: x.cur_score,
+          state: stateOf(x),
+          itemStyle: { color: stateColor(x) }
+        };
+      });
+      return { name: g.name, children: kids };
+    });
+    heatChart.setOption({
+      animationDuration: 500,
+      tooltip: {
+        backgroundColor: 'rgba(255,255,255,.96)', borderWidth: 0, padding: [8, 10],
+        extraCssText: 'box-shadow:0 6px 24px rgba(16,24,40,.16);border:1px solid rgba(169,139,93,.28);border-radius:10px;font-size:12px;',
+        formatter: function (p) {
+          var d = p.data || {};
+          if (d.score === undefined) return p.name;
+          return '<b>' + p.name + '</b>（' + (d.state || '-') + '）<br/>当前分：<b style="color:'
+            + (ST_COLOR[d.state] || '#98a2b3') + '">' + fmt(d.score) + '</b><br/>成分股：' + d.value + ' 只<br/><span style="color:#98a2b3">点击下钻详情</span>';
+        }
+      },
+      series: [{
+        type: 'treemap',
+        roam: false, nodeClick: false, breadcrumb: { show: false },
+        width: '100%', height: '100%', top: 0, left: 0, right: 0, bottom: 0,
+        label: {
+          show: true, fontSize: 11, color: '#fff',
+          formatter: function (p) {
+            var d = p.data || {};
+            return d.score !== undefined ? (p.name + ' ' + fmt(d.score, 0)) : p.name;
+          }
+        },
+        upperLabel: {
+          show: true, height: 22, color: '#3a4654', fontSize: 12, fontWeight: 600,
+          backgroundColor: 'rgba(244,246,249,.95)', borderColor: '#e3e6ec', borderWidth: 1, borderRadius: 4
+        },
+        itemStyle: { borderColor: '#fff', borderWidth: 2, gapWidth: 2 },
+        levels: [
+          { itemStyle: { borderColor: '#f0f2f6', borderWidth: 3, gapWidth: 3 }, upperLabel: { show: true } },
+          { itemStyle: { borderColor: '#fff', borderWidth: 2, gapWidth: 2 } }
+        ],
+        data: treeData
+      }]
+    }, { notMerge: true });
+    heatChart.off('click');
+    heatChart.on('click', function (p) {
+      var d = p.data || {};
+      if (d.code) {
+        renderDetail(d.code);
+        var el = document.getElementById('detailTitle');
+        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  }
 
-  /* ---------- 市场宽度图 ---------- */
-  
+  /* ---------- 分组筛选 chips ---------- */
+  function renderGroupChips() {
+    var box = document.getElementById('gChips');
+    var html = '<span class="gchip' + (curGroup === '__ALL__' ? ' on' : '') + '" data-g="__ALL__">全部<span class="n">' + INDS.length + '</span></span>';
+    GROUPS.forEach(function (g) {
+      html += '<span class="gchip' + (curGroup === g.name ? ' on' : '') + '" data-g="' + g.name + '">'
+        + g.name + '<span class="n">' + g.n + '</span></span>';
+    });
+    box.innerHTML = html;
+  }
 
   /* ---------- 排名表 ---------- */
   function renderTable() {
     var html = '';
-    INDS.forEach(function (x, i) {
+    var list = visibleInds();
+    list.forEach(function (x, i) {
       var s = x.cur_score;
       var chg = x.chg5;
       var chgTxt = (typeof chg === 'number' && isFinite(chg)) ? ((chg > 0 ? '+' : '') + fmt(chg)) : '-';
@@ -433,9 +239,10 @@
       var vst = x.vol_state, vr = x.vol_ratio;
       var vColor = vst === '放量' ? '#b1493f' : (vst === '缩量' ? '#3c8168' : '#98a2b3');
       var vTxt = (typeof vr === 'number' ? vr.toFixed(2) : '-') + ' ' + vst;
-      html += '<tr data-code="' + x.code + '" class="rowclk' + (i === 0 ? ' sel' : '') + '">'
+      html += '<tr data-code="' + x.code + '" class="rowclk' + (x.code === curCode ? ' sel' : '') + '">'
         + '<td class="rank c-rank">' + (i + 1) + '</td>'
         + '<td class="lft c-name">' + x.name + '</td>'
+        + '<td class="lft c-parent">' + (x.parent || '-') + '</td>'
         + '<td class="c-score"><b style="color:' + stateColor(x) + '">' + fmt(s) + '</b></td>'
         + '<td class="c-state"><span class="chip" style="background:' + stateColor(x) + '" title="本行业 PIT 分位阈值：超买 '
         + fmt(x.ob_line) + ' / 偏热 ' + fmt(x.hot_line) + ' / 偏冷 ' + fmt(x.cold_line)
@@ -456,7 +263,7 @@
     document.getElementById('rankBody').innerHTML = html;
   }
 
-  /* ---------- 单行业详情图 ---------- */
+  /* ---------- 单行业详情图（与主看板完全同构） ---------- */
   var curCode = INDS[0].code;
   function buildDetailOption(x) {
     var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
@@ -464,8 +271,6 @@
     var n = x.score.length;
     var H = DATA.horizon;
     var labels = DATES.concat(x.forecast.future_dates);
-    // 底部时间轴标注策略: 每月首个交易日打完整 YYYY-MM-DD 标签(首尾必标),
-    // 既常驻可见年月日、又不致 250/1300 天全标糊成一片; hideOverlap 兜底防重叠
     var showIdx = [];
     for (var si = 0; si < labels.length; si++) {
       if (si === 0) { showIdx.push(true); continue; }
@@ -498,7 +303,6 @@
     var idxLine = x.close.slice();
     for (var i2 = 0; i2 < H; i2++) idxLine.push(null);
 
-    // PIT 动态阈值: 每一天只用当日及之前的分数分布算出, 故为时间序列而非水平线
     var obS = (x.ob_series || []).slice(), osS = (x.os_series || []).slice();
     for (var q1 = 0; q1 < H; q1++) { obS.push(null); osS.push(null); }
 
@@ -517,16 +321,13 @@
     var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
 
     var pu = x.forecast.p_up;
-    // [2026-09-03] p_up 已停用 isotonic 后验映射(样本外验证无一配置改善, 见 obos_core [E2] 注),
-    // 交付原始概率 —— 故不再标注"已按历史样本保序校准 Brier x→y"。
+    // [2026-09-03] p_up 已停用 isotonic 后验映射(样本外验证无一配置改善, 见 obos_core [E2] 注), 交付原始概率
     var puTxt = (typeof pu === 'number' && isFinite(pu))
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
         + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
       : '';
     var mth = DATA.method || {};
-    // [C4] 主推演描述跟随后端实际启用方法（后端可能自动切换到 combo_mkt，文案不得写死"组合推演"）
     var mainDesc = mth.forecast_main || '跨行业类比推演';
-    // DM 显著性随真实 p 值动态渲染，不写死"p<0.05 显著"
     var bt2 = DATA.backtest || {};
     var dmv = (bt2.dm_combo_mkt_vs_persist && (bt2.main_method || 'knn') === 'combo_mkt') ? bt2.dm_combo_mkt_vs_persist
       : (bt2.dm_combo_vs_persist || {});
@@ -539,7 +340,7 @@
     document.getElementById('fcNote').innerHTML =
       '<b>动态阈值（PIT 扩张窗口）</b>：当前超买线 <b>' + fmt(x.ob_line) + '</b> / 偏热 ' + fmt(x.hot_line) +
       ' / 偏冷 ' + fmt(x.cold_line) + ' / 超卖线 <b>' + fmt(x.os_line) +
-      '</b>——四条界线全部按本行业自身历史分位（95/75/25/5）逐日推进算出，图中两条虚线随时间变化，' +
+      '</b>——四条界线全部按本细分行业自身历史分位（95/75/25/5）逐日推进算出，图中两条虚线随时间变化，' +
       '历史上每一天只用该日及之前的分布，不含任何未来信息。' +
       '相对强度分位（vs 沪深300）当前 <b>' + fmt(x.rs_pct_now) + '</b>（高=相对强）。' +
       volTxt +
@@ -584,7 +385,6 @@
           nameTextStyle: { fontSize: 11, color: COLORS.idx }, axisLabel: { color: COLORS.idx }, splitLine: { show: false },
           axisPointer: { show: true, label: { show: true, formatter: '{value}', backgroundColor: COLORS.idx, color: '#fff', fontSize: 11 } } }
       ],
-      // 曲线着色阈值与该行业当前 PIT 阈值一致（不用固定 80/20），保证图表与表格同一口径
       visualMap: { show: false, seriesIndex: 0, dimension: 1, pieces: (function () {
         var o = (typeof x.ob_line === 'number') ? x.ob_line : 80;
         var u = (typeof x.os_line === 'number') ? x.os_line : 20;
@@ -598,7 +398,6 @@
           { lte: u, color: COLORS.os }
         ];
       })() },
-      // 默认窗口：最近约 1 年交易日 + 推演段；dataZoom 缩略条保留，可拖到看全历史
       dataZoom: (function () {
         var showStart = Math.max(0, DATES.length - DETAIL_DEFAULT_DAYS);
         var showEnd = labels.length - 1;
@@ -632,7 +431,7 @@
     var x = null;
     for (var i = 0; i < INDS.length; i++) if (INDS[i].code === code) { x = INDS[i]; break; }
     if (!x) return;
-    document.getElementById('detailTitle').textContent = x.name + ' (' + x.sw + ') — 当前 ' + fmt(x.cur_score)
+    document.getElementById('detailTitle').textContent = x.name + ' (' + x.sw + ' · ' + (x.parent || '-') + ') — 当前 ' + fmt(x.cur_score)
       + ' 分 · ' + stateOf(x) + (x.sig !== '-' ? ' · ' + x.sig : '');
     document.getElementById('detailTitle').style.color = stateColor(x);
     if (!detailChart) { detailChart = makeChart('detail'); if (detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom); }
@@ -650,7 +449,6 @@
   function renderBacktest() {
     var bt = DATA.backtest || {};
     var main = bt.main_method || 'knn';
-    // 动态组装：combo_mkt 仅在数据存在且后端启用时展示（主推演切换时表格自动跟随）
     var rows = [
       ['组合推演（共识度自适应 0.3–0.7）', 'combo',
         '类比池与持平基线按共识度自适应收缩保号，共识高多信类比、共识低收敛持平；方向与纯类比池完全一致，压掉点位过度外推'],
@@ -660,7 +458,6 @@
       ['动量基准（线性外推）', 'momentum', '朴素趋势外推'],
       ['随机游走基准', 'randomwalk', '噪声对照']
     ];
-    // [C4] 市场因子分解推演：仅当 combo_mkt 数据存在时加入表格（避免主推演切换后表格缺行）
     if (bt.combo_mkt) {
       rows.splice(1, 0, ['市场因子分解推演（β·大盘+特质）', 'combo_mkt',
         '行业分=β·沪深300分+截距+特质残差，系统性(β·大盘)与特质(残差)分别用各自类比池推演后重构']);
@@ -710,24 +507,32 @@
     });
     document.getElementById('btBody').innerHTML = html;
     document.getElementById('btNote').innerHTML = '<b>结论：</b>' + (bt.conclusion || '回测数据不足')
-      + '<br/><span style="color:var(--sub)">口径：' + (bt.industries_tested || 0) + ' 个行业 × '
+      + '<br/><span style="color:var(--sub)">口径：' + (bt.industries_tested || 0) + ' 个细分行业 × '
       + (bt.n_blocks_total || 0) + ' 个<b>互不重叠</b>时间块（步长 ' + (bt.step || 30)
       + ' 日 = 预测期长度），共 ' + ((bt.knn || {}).n || 0) + ' 个样本。'
-      + '显著性用<b>块级 t 检验</b>（31个行业同一天算1个观测），因为同期行业高度相关，'
+      + '显著性用<b>块级 t 检验</b>（' + (bt.industries_tested || 0) + ' 个细分行业同一天算1个观测），因为同期行业高度相关，'
       + '若按独立样本算 p 值会被夸大若干个数量级。方向准确率 &gt;50% 优于抛硬币；'
       + '覆盖率 = 真实路径落在 P25-P75 的比例，理论值 50%，"校准后"列为按历史覆盖率反推系数缩放区间宽度的结果。'
-      + '"持平基线"方向准确率不适用（它从不预测方向变化），列出它是为了检验点预测有无真实价值。</span>';
+      + '"持平基线"方向准确率不适用（它从不预测方向变化），列出它是为了检验点预测有无真实价值。'
+      + '细分行业成分股较少、波动大于一级行业，读数噪声相应更高，请以方向与区间为主、不纠结单点分数。</span>';
   }
-
-  
-
-  
-
-  
 
   function bindEvents() {
     var sel = document.getElementById('indSel');
-    INDS.forEach(function (x) { var o = document.createElement('option'); o.value = x.code; o.textContent = x.name; sel.appendChild(o); });
+    // 下拉按一级分组(optgroup)
+    var byGroup = {};
+    GROUPS.forEach(function (g) { byGroup[g.name] = []; });
+    INDS.forEach(function (x) { (byGroup[x.parent || '其他'] || []).push(x); });
+    GROUPS.forEach(function (g) {
+      var og = document.createElement('optgroup');
+      og.label = g.name;
+      (byGroup[g.name] || []).forEach(function (x) {
+        var o = document.createElement('option');
+        o.value = x.code; o.textContent = x.name;
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
     sel.value = curCode;
     sel.addEventListener('change', function () { renderDetail(sel.value); });
     document.getElementById('rankBody').addEventListener('click', function (e) {
@@ -735,18 +540,24 @@
       while (tr && tr.tagName !== 'TR') tr = tr.parentNode;
       if (tr && tr.getAttribute('data-code')) renderDetail(tr.getAttribute('data-code'));
     });
+    document.getElementById('gChips').addEventListener('click', function (e) {
+      var t = e.target;
+      while (t && !(t.classList && t.classList.contains('gchip'))) t = t.parentNode;
+      if (!t) return;
+      curGroup = t.getAttribute('data-g');
+      renderGroupChips();
+      renderTable();
+    });
     window.addEventListener('resize', function () { charts.forEach(function (c) { c.resize(); }); });
     window.addEventListener('orientationchange', function () { setTimeout(function () { if (detailChart) renderDetail(curCode); }, 250); });
   }
 
   renderQuality();
   renderSummary();
-    renderTable();
+  renderHeatmap();
+  renderGroupChips();
+  renderTable();
   renderBacktest();
-          bindEvents();
+  bindEvents();
   renderDetail(curCode);
 })();
-
-</script>
-</body>
-</html>

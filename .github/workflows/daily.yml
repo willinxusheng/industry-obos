@@ -51,7 +51,8 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # [2026-09-03] 二级管线加入后总时长上调: 109 行业回测实测 ~10 分钟级，留足余量
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -144,20 +145,40 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: python fetch_data.py
 
+      # [2026-09-03] 申万二级 109 个细分行业取数（同多源回退契约；>5 个失败整体中止）
+      - name: Fetch 109 sub-industries (multi-source)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python fetch_sub_data.py
+
       # 计算 + 质量门禁（compute.py 内置 quality_gate，status=FAIL 时自行 SystemExit 阻断部署）
       - name: Compute OBOS + backtest (quality gate)
         if: steps.fresh.outputs.skip != 'true'
         run: python compute.py
+
+      # [2026-09-03] 二级细分行业同管线计算（PIT/回测/校准全套，含口径真空期判据）
+      - name: Compute sub-industry OBOS + backtest (quality gate)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python compute.py --sub
 
       # 前端门禁：在 DOM stub 下实跑 app.js，捕获运行时错误/NaN/字段缺失/区间顺序错
       - name: Frontend smoke test (test_render.js)
         if: steps.fresh.outputs.skip != 'true'
         run: node test_render.js
 
+      # [2026-09-03] 细分看板前端门禁（sub_app.js + sub_obos.json）
+      - name: Frontend smoke test sub (test_render.js --sub)
+        if: steps.fresh.outputs.skip != 'true'
+        run: node test_render.js --sub
+
       # 组装 HTML（echarts/data 外链独立文件以利用浏览器缓存，app.js 内联）
       - name: Build dashboard HTML
         if: steps.fresh.outputs.skip != 'true'
         run: python build_html.py
+
+      # [2026-09-03] 组装细分看板 sub.html + sub_data.js
+      - name: Build sub dashboard HTML
+        if: steps.fresh.outputs.skip != 'true'
+        run: python build_html.py --sub
 
       # 生成 Pages 入口 index.html（根目录）
       - name: Prepare Pages entry (index.html)
@@ -200,7 +221,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.html echarts.min.js data.js
+          git add index.html echarts.min.js data.js sub.html sub_data.js
           if git diff --cached --quiet; then
             echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
             echo "pushed=false" >> "$GITHUB_OUTPUT"

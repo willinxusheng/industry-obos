@@ -1,10 +1,13 @@
-/* 无头冒烟测试: 在 vm + DOM stub 下执行 app.js，验证逻辑无运行时错误 + 字段完整 */
+/* 无头冒烟测试: 在 vm + DOM stub 下执行 app.js，验证逻辑无运行时错误 + 字段完整
+ * [2026-09-03] --sub: 改测细分看板 (data/sub_obos.json + sub_app.js) */
 const fs = require('fs');
 const vm = require('vm');
 const path = __dirname;
 
-const data = JSON.parse(fs.readFileSync(path + '/data/industry_obos.json', 'utf8'));
-const appsrc = fs.readFileSync(path + '/app.js', 'utf8');
+const SUB = process.argv.includes('--sub');
+const data = JSON.parse(fs.readFileSync(path + (SUB ? '/data/sub_obos.json' : '/data/industry_obos.json'), 'utf8'));
+const appsrc = fs.readFileSync(path + (SUB ? '/sub_app.js' : '/app.js'), 'utf8');
+const appName = SUB ? 'sub_app.js' : 'app.js';
 
 // 1) 数据字段完整性校验
 const need = ['rs_pct', 'ob_line', 'os_line', 'ob_series', 'os_series', 'above_ma200', 'sig', 'fdr_q',
@@ -103,15 +106,15 @@ const document = {
   querySelectorAll() { return []; },
   addEventListener() {}
 };
-const echarts = { init() { return { setOption() {}, resize() {} }; } };
+const echarts = { init() { return { setOption() {}, resize() {}, on() {}, off() {} }; } };
 const window = { addEventListener() {} };
 const sandbox = { DATA: data, echarts, document, window, console, Math, JSON, Array, Object,
   String, Number, isFinite, parseFloat, parseInt, setTimeout, RegExp };
 vm.createContext(sandbox);
 try {
-  vm.runInContext(appsrc, sandbox, { filename: 'app.js' });
+  vm.runInContext(appsrc, sandbox, { filename: appName });
   const touched = Object.keys(elements).filter(k => elements[k].innerHTML || elements[k].textContent);
-  console.log('app.js executed OK. cells updated:', touched.join(', '));
+  console.log(appName + ' executed OK. cells updated:', touched.join(', '));
   // 关键内容检查
   const must = ['btBody', 'btNote', 'qBadge', 'qGrid', 'qNote', 'fcNote'];
   const miss = must.filter(k => !(k in elements));
@@ -150,8 +153,13 @@ try {
   // 排名表含综合信号 + 背离
   const rb = elements.rankBody;
   if (!rb || !rb.innerHTML) { console.error('rankBody NOT rendered'); process.exit(1); }
-  if (!String(rb.innerHTML).includes('机会') && !String(rb.innerHTML).includes('风险')) {
-    console.error('rankBody missing composite signal'); process.exit(1);
+  // [2026-09-03] 原断言"rankBody 必含机会/风险"在全中性市况下误报（实测 2026-09-03
+  // 一级 31 行业 sig_label 全中性）。改为逐行业校验渲染标签与后端 sig_label 一致——
+  // 更严格且与市况无关：任何行业的标签渲染缺失/错配都会 FAIL。
+  for (const x of data.industries) {
+    if (x.sig_label && !String(rb.innerHTML).includes('>' + x.sig_label + '<')) {
+      console.error('rankBody sig_label mismatch:', x.name, x.sig_label); process.exit(1);
+    }
   }
   if (!String(rb.innerHTML).includes('看涨') && !String(rb.innerHTML).includes('看跌') && !String(rb.innerHTML).includes('>-<')) {
     console.error('rankBody missing divergence col'); process.exit(1);

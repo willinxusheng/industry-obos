@@ -25,7 +25,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 
 
 # ---------------- 数据质量门禁 ----------------
-def quality_gate(raw, bdates, bclose):
+def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     issues = []
     n_ind = len(raw)
     n_dt = len(bdates)
@@ -33,12 +33,25 @@ def quality_gate(raw, bdates, bclose):
     miss = dup = zero_c = zero_v = unsorted = 0
     spans = []
     fq_keys = set()
+    vacuum = {}  # [2026-09-03 二级模式] 指数口径真空期: 缺失全部集中在"连续有效段起点"之前
     for code, v in raw.items():
         fq_keys.add(v.get("fq_key") or "unknown")
         rows = v["rows"]
         ds = [r[0] for r in rows]
         cmap = {r[0]: r[2] for r in rows}
-        miss += sum(1 for d in bdates if d not in cmap)
+        n_miss_code = sum(1 for d in bdates if d not in cmap)
+        if relax_prefix_vacuum and n_miss_code:
+            # 判据: 最后一个缺失日之后全有(连续有效段), 且该段 >= 60% 全程 ->
+            # 缺失是"指数尚未按现口径每日发布"的历史真空(如 801179 铁路公路, 申万2021版
+            # 2021-12-13 生效), 非取数故障. 真空期不计入 miss(指标/回测对 None 天然兼容),
+            # 单独如实披露. 中间有洞或近期缺失仍按真实缺失处理.
+            has = [d in cmap for d in bdates]
+            last_miss_idx = max(i for i, h in enumerate(has) if not h)
+            if all(has[last_miss_idx + 1:]) and (n_dt - last_miss_idx - 1) >= int(n_dt * 0.6):
+                vacuum[code] = {"name": v.get("name"), "cells": n_miss_code,
+                                "valid_from": bdates[last_miss_idx + 1]}
+                n_miss_code = 0
+        miss += n_miss_code
         dup += len(ds) - len(set(ds))
         zero_c += sum(1 for r in rows if r[2] is None or r[2] <= 0)
         zero_v += sum(1 for r in rows if r[5] is None or r[5] < 0)
@@ -57,8 +70,8 @@ def quality_gate(raw, bdates, bclose):
         issues.append("非正收盘价 %d 条" % zero_c)
     if unsorted:
         issues.append("%d 个行业K线未按日期升序" % unsorted)
-    if n_ind != 31:
-        issues.append("行业数 %d != 31" % n_ind)
+    if n_ind != expect_n:
+        issues.append("行业数 %d != %d" % (n_ind, expect_n))
     today = datetime.date.today()
     lag_days = (today - datetime.date.fromisoformat(bdates[-1])).days
     if lag_days > 5:
@@ -86,6 +99,7 @@ def quality_gate(raw, bdates, bclose):
         "span": [bdates[0], bdates[-1]],
         "align_coverage": round(cover, 5),
         "missing_cells": miss, "dup_dates": dup,
+        "prefix_vacuum": vacuum,
         "nonpositive_close": zero_c, "negative_volume": zero_v,
         "unsorted_industries": unsorted,
         "lag_days": lag_days,
@@ -284,8 +298,15 @@ def r1(x):
 
 
 # ---------------- 主流程 ----------------
-def main():
-    with open(os.path.join(BASE, "data", "industry_klines.json"), encoding="utf-8") as f:
+def main(sub_mode=False):
+    # [2026-09-03] 二级行业模式: 同一条 PIT/回测/校准管线跑申万二级 109 个,
+    # 输入 data/sub_klines.json(fetch_sub_data.py), 输出 data/sub_obos.json.
+    # 数据源契约与一级完全一致(不复权日K/沪深300基准/同一套质量门禁),
+    # 优化纪律(拉伸度 C11 启用、E2/E3 停用)自动继承.
+    klines_file = "sub_klines.json" if sub_mode else "industry_klines.json"
+    out_file = "sub_obos.json" if sub_mode else "industry_obos.json"
+    expect_n = 109 if sub_mode else 31
+    with open(os.path.join(BASE, "data", klines_file), encoding="utf-8") as f:
         raw = json.load(f)
     with open(os.path.join(BASE, "data", "benchmark.json"), encoding="utf-8") as f:
         hs = json.load(f)
@@ -295,7 +316,8 @@ def main():
     asof = ref_dates[-1]
     n_t = len(ref_dates)
 
-    quality = quality_gate(raw, ref_dates, bclose)
+    quality = quality_gate(raw, ref_dates, bclose, expect_n=expect_n,
+                           relax_prefix_vacuum=sub_mode)
     # [E] 跨基准一致性软告警: 基准前复权而行业未复权 -> rs_pct 相对强度跨基准偏估
     if bfq == "qfq" and "day" in (quality.get("price_basis") or ""):
         quality["issues"].append(
@@ -321,6 +343,7 @@ def main():
         ind_meta.append({"rs": rs, "pos": p_close, "bias": p_bias})
         closes_all.append(close)
         base.append({"code": code, "name": v["name"], "sw": v.get("sw", code.replace("pt01", "")),
+                     "parent": v.get("parent"), "n_constituents": v.get("n_constituents"),
                      "close": close, "vol": vol, "rs": rs,
                      "rs_pct": pct_rank_series(rel), "m200": ma(close, 200),
                      "rets": daily_returns(close)})
@@ -546,6 +569,7 @@ def main():
         vr, vst = vol_ratio_state(b["vol"])
         industries.append({
             "code": b["code"], "name": b["name"], "sw": b["sw"],
+            "parent": b.get("parent"), "n_constituents": b.get("n_constituents"),
             "close": [round(c, 2) if c is not None else None for c in b["close"]],
             "vol": [round(x, 0) if isinstance(x, (int, float)) else None for x in b["vol"]],
             "score": [r1(x) for x in score],
@@ -654,12 +678,12 @@ def main():
     # [2026-09-03] 不再声称"已保序校准(Brier x->y)": isotonic 映射样本外无改善(见 obos_core [E2] 注),
     # 交付为原始概率. Brier raw 若可得则如实披露, 便于读者判断概率校准质量.
     bt["conclusion"] = (
-        "方向准确率 %.1f%%（块级 t 检验 p=%s，已按“31行业同期算1块”消除横截面相关导致的显著性夸大），"
+        "方向准确率 %.1f%%（块级 t 检验 p=%s，已按“%d行业同期算1块”消除横截面相关导致的显著性夸大），"
         "升温概率 AUC %s%s。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
         "该点位优势%s——可信的是方向与区间，不是具体分数。"
         "稳健性：%d 个可比年份中 %s 年方向有效，最差年份 %s 仅 %.1f%%；"
         "条件覆盖最偏的一档是「%s」实测 %.1f%%（目标 50%%）。"
-        % ((mm.get("dir_acc") or 0) * 100, mm.get("block_p"),
+        % ((mm.get("dir_acc") or 0) * 100, mm.get("block_p"), expect_n,
            auc_txt,
            (", Brier %.3f（概率未做后验映射，样本外验证无改善）" % _pb_raw
             if _pb_raw is not None else ""),
@@ -722,7 +746,7 @@ def main():
         "cluster": cluster_data,
         "industries": industries,
     }
-    path = os.path.join(BASE, "data", "industry_obos.json")
+    path = os.path.join(BASE, "data", out_file)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
 
@@ -746,4 +770,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(sub_mode=("--sub" in sys.argv))

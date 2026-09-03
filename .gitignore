@@ -2,3 +2,8 @@
 industry-obos-dashboard.html
 __pycache__/
 *.pyc
+
+# [2026-09-03] 二级管线本地数据产物：CI 每日自行 fetch+compute 生成，本地不提交
+#（data/ 纪律 = CI 独家写盘；老三个 data/*.json 为历史跟踪快照，新文件不走老路）
+data/sub_klines.json
+data/sub_obos.json
