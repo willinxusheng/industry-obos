@@ -170,6 +170,12 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: node test_render.js --sub
 
+      # [2026-09-03] 门禁的门禁（反假绿）：造极端市况 + 故意改坏 app，验证上面那条门禁
+      # 既不会在极端市况下误报 FAIL 拖垮刷新，也不是恒真的假绿。零第三方依赖，可安全进 CI。
+      - name: Gate self-check (extreme market + broken-app negative control)
+        if: steps.fresh.outputs.skip != 'true'
+        run: node gate_edge_test.js
+
       # 组装 HTML（echarts/data 外链独立文件以利用浏览器缓存，app.js 内联）
       - name: Build dashboard HTML
         if: steps.fresh.outputs.skip != 'true'
