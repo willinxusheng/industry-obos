@@ -127,10 +127,6 @@
         if (!rec) continue;
         for (var k in rec) INDS[i][k] = rec[k];
       }
-      if (typeof SUB_EXTRA !== 'undefined') {
-        if (SUB_EXTRA.cluster !== undefined) DATA.cluster = SUB_EXTRA.cluster;
-        if (SUB_EXTRA.breadth !== undefined) DATA.breadth = SUB_EXTRA.breadth;
-      }
       seriesReady = true;
       var q = seriesCbs.slice(); seriesCbs.length = 0;
       for (var j = 0; j < q.length; j++) { try { q[j](); } catch (e) { /* 单个失败不拖垮其余 */ } }

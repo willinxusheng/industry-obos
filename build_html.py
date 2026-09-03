@@ -52,9 +52,6 @@ def _parents_js(sub_data):
 
 # 详情图需要的时序字段(只有点开某个行业画曲线时才用得上, 首屏表格一列都不需要)
 SUB_SERIES_KEYS = ('close', 'score', 'rs_pct', 'ob_series', 'os_series')
-# 非首屏必需的全局块: 前端 0 处引用, 但数据本身有价值(未来可能开新模块),
-# 所以不删, 只挪出首屏 —— 省 111KB, 且将来要用从懒加载文件里取一样
-SUB_EXTRA_KEYS = ('cluster', 'breadth')
 
 def _split_series(data):
     """[2026-09-03] 把 109 个行业的时间序列从首屏数据里剥离出去。
@@ -76,38 +73,30 @@ def _split_series(data):
         if code is None:
             raise AssertionError("行业缺 code, 无法与时序对位")
         series[code] = rec
-    extra = {}
-    for k in SUB_EXTRA_KEYS:
-        if k in data:
-            extra[k] = data.pop(k)
-
     # 剥离完整性: 每个行业都必须带齐 5 条时序, 否则详情图会画出断线却不报错
     for code, rec in series.items():
         for k in SUB_SERIES_KEYS:
             assert k in rec, "行业 %s 缺时序字段 %s" % (code, k)
             assert isinstance(rec[k], list), "行业 %s 的 %s 不是数组" % (code, k)
-    return {"series": series, "extra": extra}
+    return series
 
 
-def _write_series(block, asof):
+def _write_series(series, asof):
     """写 sub_series.js。带上 asof 供前端校验版本一致性。
 
     asof 标记不是为了好看: Pages 对两个文件的 CDN 缓存可能错拍(一个命中新、一个命中旧),
     那时首屏指标与详情曲线就是两个交易日的数据, 比不显示更误导。前端发现不一致会提示刷新。
     """
-    js_s = json.dumps(block["series"], ensure_ascii=False).replace("</script>", "<\\/script>")
-    js_e = json.dumps(block["extra"], ensure_ascii=False).replace("</script>", "<\\/script>")
-    for nm, js in (("SUB_SERIES", js_s), ("SUB_EXTRA", js_e)):
-        assert "NaN" not in js and "Infinity" not in js, "non-finite number in " + nm
+    js_s = json.dumps(series, ensure_ascii=False).replace("</script>", "<\\/script>")
+    assert "NaN" not in js_s and "Infinity" not in js_s, "non-finite number in SUB_SERIES"
     path = os.path.join(BASE, "sub_series.js")
     with io.open(path, "w", encoding="utf-8") as f:
         f.write("var SUB_SERIES_ASOF = " + json.dumps(asof) + ";\n")
         f.write("var SUB_SERIES = " + js_s + ";\n")
-        f.write("var SUB_EXTRA = " + js_e + ";\n")
     size = os.path.getsize(path)
     assert size > 1000000, "sub_series.js 写入异常(过小): %d" % size
     print("built: sub_series.js  时序 MB:", round(size / 1048576, 2),
-          "| 行业数:", len(block["series"]), "| asof:", asof)
+          "| 行业数:", len(series), "| asof:", asof)
 
 
 def main(sub_mode=False):
@@ -135,6 +124,17 @@ def main(sub_mode=False):
     for _x in data.get("industries", []):
         for _k in DROP_KEYS:
             _x.pop(_k, None)
+
+    # [2026-09-03] 全局级的同款死数据(与 ma200/vol 一个性质: 只写入、0 处读取)。
+    #   cluster : 聚类模块的 UI 早已下线(test_render.js 甚至断言 DOM 里不该有它),
+    #             数据却一直跟着发货 —— 二级 81KB / 主看板 8.6KB
+    #   breadth : 只有 compute.py 算、build 搬、前端合并进 DATA, 全仓库无任何一处渲染消费
+    #             —— 二级 33KB / 主看板 31KB
+    #   留在 data/*.json 里(服务端日志、将来开新模块还用得上), 只是不再发给浏览器。
+    #   注: test_render.js 校验的是 JSON(源数据)而非构建产物, 因此删发货不影响门禁。
+    GLOBAL_DROP_KEYS = ('cluster', 'breadth')
+    for _k in GLOBAL_DROP_KEYS:
+        data.pop(_k, None)
 
     # [2026-09-03] 二级看板: 首屏数据与详情图时序分离(data 就地剥离, 返回待写入的时序块)
     series_block = _split_series(data) if sub_mode else None
