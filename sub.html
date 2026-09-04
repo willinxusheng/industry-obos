@@ -856,6 +856,10 @@ setTimeout(function () {
   /* 默认详情 = 当前分最高的二级行业(与排名榜首一致), 打开即见当日最热的一个 */
   var curCode = byScore(INDS)[0].code;
   function buildDetailOption(x) {
+    /* 防御: 若该行业时序缺失(sub_series.js 与 sub_data.js 缓存错拍/文件不完整),
+     * 此处会崩在 x.score.length, 且异常被 try-catch 吞掉 → 详情区停在"加载中"且
+     * 每次点击重复崩溃。返回 null 让调用方给明确提示。 */
+    if (!x || !Array.isArray(x.score) || !x.score.length) return null;
     var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
     var IS_MOBILE = _vw <= 640;
     var n = x.score.length;
@@ -1062,13 +1066,17 @@ setTimeout(function () {
       ensureSeries(function () {
         ensureEcharts(function () {
           if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
+          var opt = buildDetailOption(x);
+          if (!opt) { seriesNote('该行业详情时序不完整（数据文件异常），请刷新页面重试。'); return; }
           detailChart = makeChart('detail');
           if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
-          if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+          if (detailChart) detailChart.setOption(opt, { notMerge: true });
         });
       });
     } else {
-      detailChart.setOption(buildDetailOption(x), { notMerge: true });
+      var opt2 = buildDetailOption(x);
+      if (opt2) detailChart.setOption(opt2, { notMerge: true });
+      else seriesNote('该行业详情时序不完整（数据文件异常），请刷新页面重试。');
     }
 
     /* 只给二级行加/去 sel, 且用 classList 增删以保留原有的 dim(中性淡化)类——
