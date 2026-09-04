@@ -463,3 +463,10 @@ jobs:
       # 首屏不等时序：两个看板 × 404/挂起 共 4 个场景，验"用户网络差时看到什么"
       - name: No-series first-paint contract (主看板 + 二级看板 × 404/挂起)
         run: node test_dom_noseries.js
+
+      # 门禁的门禁（第七道）：故意改坏 app.js / sub_app.js（fcNote 挪回回调 /
+      # onerror 不写提示），上面的 test_dom_noseries.js 必须真的判红 —— 防止哪天
+      # 它退化成"永远绿"的摆设（改坏了照样过）。每个坏法都带锚点断言：
+      # 补丁没打上就自判失败，绝不允许"改了个寂寞还报通过"。
+      - name: Antifake — 门禁必须能抓到故意植入的回归
+        run: python3 test_antifake_noseries.py
