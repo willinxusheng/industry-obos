@@ -291,7 +291,9 @@ jobs:
           # 所以新增产物文件务必同步加到这里。漏加的后果很隐蔽——首屏 sub_data.js 每天更新,
           # 而 sub_series.js 会永远停在首次推送的版本, 详情曲线与表格指标分属不同交易日。
           # [2026-09-04] series.js 是主看板的同款懒加载时序(从 data.js 剥离), 同理必须提交。
-          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js
+          # [2026-09-04] data/prediction_log.jsonl: 预测快照审计日志(compute.py 每次追加),
+          #   由 audit_predictions.py 复核"当时的预测 vs 后来的实际"。漏提交=审计断档。
+          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js data/prediction_log.jsonl
           if git diff --cached --quiet; then
             echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
             echo "pushed=false" >> "$GITHUB_OUTPUT"

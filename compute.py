@@ -23,6 +23,41 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
+# [PJ] 预测日志(审计资产, 2026-09-04): 每次主模式计算把当日的"预测快照"追加落盘.
+#   复核工具 audit_predictions.py 在预测成熟(30 交易日后)后, 用当时的快照 vs 后来实际
+#   分数做无泄漏复核(方向命中/p_up Brier/区间覆盖) —— 让"预测准确性"可被持续审计,
+#   而不只依赖 walk-forward 模拟. 由 CI 独家提交(见 daily.yml commit 清单), 本地不提交.
+#   存储紧凑化: 只留复核必需的终点值(s/med/lo/hi@30d + p_up), 每行业每天 ~120B.
+PRED_LOG = os.path.join(BASE, "data", "prediction_log.jsonl")
+
+
+def append_prediction_log(asof, industries):
+    """按 asof 幂等追加预测快照行(JSON Lines). 只对主模式(31 一级行业)启用."""
+    if os.path.exists(PRED_LOG):
+        with open(PRED_LOG, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith('{"asof":"%s"' % asof):
+                    return  # 当日已记录, 幂等
+    lines = []
+    for ind in industries:
+        fc = ind.get("forecast") or {}
+        md, lo, hi = fc.get("median"), fc.get("p25"), fc.get("p75")
+        if not md or not lo or not hi:
+            continue
+        lines.append(json.dumps({
+            "asof": asof, "code": ind["code"], "name": ind.get("name"),
+            "s": ind.get("cur_score"), "state": ind.get("state"),
+            "med": round(float(md[-1]), 2),
+            "lo": round(float(lo[-1]), 2),
+            "hi": round(float(hi[-1]), 2),
+            "p_up": fc.get("p_up"),
+        }, ensure_ascii=False, separators=(",", ":")))
+    if lines:
+        with open(PRED_LOG, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print("prediction log appended: %d industries @ %s (→%s)"
+              % (len(lines), asof, PRED_LOG))
+
 
 # ---------------- 数据质量门禁 ----------------
 def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
@@ -749,6 +784,9 @@ def main(sub_mode=False):
     path = os.path.join(BASE, "data", out_file)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
+
+    if not sub_mode:
+        append_prediction_log(asof, industries)
 
     print("asof:", asof, "industries:", len(industries),
           "with_forecast:", sum(1 for x in industries if x["forecast"]["median"]))
