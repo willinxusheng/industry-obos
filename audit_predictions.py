@@ -95,6 +95,7 @@ def main():
         return
     dir_ok = dir_n = 0
     brier = 0.0
+    brier_n = 0
     cov_hit = cov_n = 0
     by_regime = {}
     for r, real30 in mature:
@@ -109,8 +110,11 @@ def main():
                (med - s) * (real30 - s) > 0:
                 dir_ok += 1
         if pup is not None:
+            # [2026-09-04] Brier 样本与分母必须同源: 此前 n_p 另行统计(p_up 非 None 即计,
+            # 未排除 s=None 行), 与循环内实际累加样本不一致, 少数 s 缺失行会让 Brier 被低估。
             y = 1 if real30 > s else 0
             brier += (pup - y) ** 2
+            brier_n += 1
         if lo is not None and hi is not None:
             cov_n += 1
             cov_hit += 1 if (lo <= real30 <= hi) else 0
@@ -124,9 +128,8 @@ def main():
     print("\n===== 预测快照复核(成熟 %d 行) =====" % len(mature))
     if dir_n:
         print("方向命中(30d): %.1f%% (%d/%d)" % (100.0 * dir_ok / dir_n, dir_ok, dir_n))
-    if mature and any(r.get("p_up") is not None for r, _ in mature):
-        n_p = sum(1 for r, _ in mature if r.get("p_up") is not None)
-        print("p_up Brier  : %.4f (n=%d)" % (brier / n_p, n_p))
+    if brier_n:
+        print("p_up Brier  : %.4f (n=%d)" % (brier / brier_n, brier_n))
     if cov_n:
         print("区间覆盖    : %.1f%% (%d/%d)  [目标 50%%]" % (100.0 * cov_hit / cov_n, cov_hit, cov_n))
     print("\n分区间:")
@@ -134,8 +137,7 @@ def main():
         if g not in by_regime or by_regime[g][1] == 0:
             continue
         ok, n, br = by_regime[g]
-        print("  %-4s: 方向 %.1f%% (%d/%d)%s" % (g, 100.0 * ok / n, ok, n,
-              "" if n == 0 else ""))
+        print("  %-4s: 方向 %.1f%% (%d/%d)" % (g, 100.0 * ok / n, ok, n))
 
 
 if __name__ == "__main__":

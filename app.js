@@ -182,7 +182,15 @@
       var kk = KEY[stateOf(x)];
       if (kk) cnt[kk]++; else cnt.mid++;
     });
-    var top = INDS[0], bot = INDS[INDS.length - 1];
+    /* 最超买/最超卖显式取极值, 不依赖后端数组顺序(排序逻辑一变就会静默报错,
+     * 与 sub_app.js 同款加固) */
+    var top = null, bot = null;
+    INDS.forEach(function (x) {
+      if (typeof x.cur_score !== 'number' || !isFinite(x.cur_score)) return;
+      if (!top || x.cur_score > top.cur_score) top = x;
+      if (!bot || x.cur_score < bot.cur_score) bot = x;
+    });
+    if (!top) { top = INDS[0]; bot = INDS[INDS.length - 1]; }
     document.getElementById('sumOb').textContent = cnt.ob + ' 个';
     document.getElementById('sumHot').textContent = cnt.hot + ' 个';
     document.getElementById('sumMid').textContent = cnt.mid + ' 个';
@@ -236,6 +244,10 @@
   /* ---------- 单行业详情图 ---------- */
   var curCode = INDS[0].code;
   function buildDetailOption(x) {
+    /* 防御: 若该行业时序缺失(series.js 与 data.js 缓存错拍/文件不完整), 此处会崩在
+     * x.score.length, 且异常被 ensureEcharts 的 try-catch 吞掉 → 详情区永远停在
+     * "加载中"且每次点击重复崩溃。返回 null 让调用方给明确提示(宁可不画, 不留死区)。 */
+    if (!x || !Array.isArray(x.score) || !x.score.length) return null;
     var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
     var IS_MOBILE = _vw <= 640;
     var n = x.score.length;
@@ -449,13 +461,17 @@
       ensureSeries(function () {
         ensureEcharts(function () {
           if (curCode !== code) return;   // 加载期间用户已切到别的行业, 放弃本次绘制
+          var opt = buildDetailOption(x);
+          if (!opt) { seriesNote('该行业详情时序不完整（数据文件异常），请刷新页面重试。'); return; }
           detailChart = makeChart('detail');
           if (detailChart && detailChart.getZr) detailChart.getZr().on('dblclick', resetZoom);
-          if (detailChart) detailChart.setOption(buildDetailOption(x), { notMerge: true });
+          if (detailChart) detailChart.setOption(opt, { notMerge: true });
         });
       });
     } else {
-      detailChart.setOption(buildDetailOption(x), { notMerge: true });
+      var opt2 = buildDetailOption(x);
+      if (opt2) detailChart.setOption(opt2, { notMerge: true });
+      else seriesNote('该行业详情时序不完整（数据文件异常），请刷新页面重试。');
     }
 
     var rows = document.querySelectorAll('#rankBody tr');

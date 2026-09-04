@@ -107,8 +107,11 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         issues.append("%d 个行业K线未按日期升序" % unsorted)
     if n_ind != expect_n:
         issues.append("行业数 %d != %d" % (n_ind, expect_n))
-    today = datetime.date.today()
-    lag_days = (today - datetime.date.fromisoformat(bdates[-1])).days
+    # [2026-09-04] lag 判定必须用北京时间: GitHub Actions runner 是 UTC, 若用 date.today()
+    # (进程本地时区), 在北京 23:00-次日 08:00 (UTC 15:00-24:00) 运行的 CI 会把"今日收盘"
+    # 误判成滞后 1 天, 披露失真。统一按 UTC+8 取"今天"。
+    _bj = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date()
+    lag_days = (_bj - datetime.date.fromisoformat(bdates[-1])).days
     if lag_days > 5:
         issues.append("数据滞后 %d 天" % lag_days)
     # [日历过期预警] 预测窗口若超出交易日历覆盖年份，future_trade_dates 只会排除周末，
