@@ -58,6 +58,17 @@
   .hero .sub b { color: #eef1f5; font-weight: 600; }
   .hero .sub a { color: #c8a86a; text-decoration: none; border-bottom: 1px dashed rgba(200,168,106,.5); }
   .hero .sub a:hover { color: #e8cf9a; }
+  /* 一级/二级视图切换（hero 内分段导航）——与主看板对称的"菜单"入口 */
+  .hero .vnav { position: relative; display: inline-flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+  .hero .vnav a { display: inline-flex; align-items: baseline; gap: 5px; padding: 6px 13px 7px;
+    border-radius: 999px; font-size: 13px; font-weight: 500; letter-spacing: .3px;
+    color: #c7cfd9; text-decoration: none; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.15); transition: all .22s var(--ease); }
+  .hero .vnav a small { font-size: 10.5px; opacity: .7; font-weight: 400; }
+  .hero .vnav a:hover { color: #fff; background: rgba(255,255,255,.13); border-color: rgba(255,255,255,.28); }
+  .hero .vnav a.on { color: #241d10; background: linear-gradient(180deg, #dcbd82, #c3a05e);
+    border-color: transparent; font-weight: 700; box-shadow: 0 2px 10px rgba(169,139,93,.35); }
+  .hero .vnav a.on small { color: rgba(36,29,16,.65); }
 
   .card { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow-sm);
@@ -185,6 +196,9 @@
     .hero h1 { font-size: 17px; letter-spacing: .5px; gap: 7px; }
     .hero h1 .accent-line { margin-top: 8px; width: 38px; }
     .hero .sub { font-size: 11.5px; line-height: 1.8; }
+    .hero .vnav { margin-top: 10px; gap: 5px; }
+    .hero .vnav a { padding: 5px 11px 6px; font-size: 12px; }
+    .hero .vnav a small { display: none; }
     .card { padding: 13px 12px; margin-bottom: 14px; border-radius: 14px; }
     .card h2 { font-size: 15px; margin-bottom: 11px; }
     .card h2 .note { font-size: 11px; }
@@ -270,7 +284,11 @@ setTimeout(function () {
 <div class="wrap">
   <div class="hero">
     <h1>A股细分行业超买超卖看板 <span class="badge-v">申万二级 · 专业版</span><span class="accent-line"></span></h1>
-    <div class="sub">申万二级 <b id="nIndTxt">109</b> 个细分行业（剔除成分股&lt;10 的微型行业）· 近 5 年日K · 数据截至 <b id="asofTxt">-</b> 收盘 · 基准：沪深300 · 与主看板同一套 PIT/回测/校准口径 · <a href="index.html">← 返回申万一级主看板</a></div>
+    <div class="sub">申万二级 <b id="nIndTxt">109</b> 个细分行业（剔除成分股&lt;10 的微型行业）· 近 5 年日K · 数据截至 <b id="asofTxt">-</b> 收盘 · 基准：沪深300 · 与主看板同一套 PIT/回测/校准口径</div>
+    <nav class="vnav" aria-label="看板切换">
+      <a href="index.html">一级行业总览 <small>31 个</small></a>
+      <a class="on" href="sub.html">二级行业细分 <small>109 个</small></a>
+    </nav>
   </div>
 
   <div class="grid6">
