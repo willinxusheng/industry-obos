@@ -667,17 +667,23 @@ def main(sub_mode=False):
                         "sig_label": "-", "sig_score": None})
             continue
         sig_b = 1.0 if ind["sig"] != "-" else 0.0
+        # [2026-09-04] 量能方向翻转(深度回测 2021-04→2026-09 定界, 见 docs/deep_backtest2):
+        # 原规则"缩量+偏冷=机会加分 / 放量+偏热=风险减分"与 31 行业 × 1301 日实测相反:
+        #   深冷(<=20) 放量 → 20d 超额 +3.46%(胜率66%) vs 缩量 +0.46%(≈无反弹) vs 平量 +0.19%
+        #   偏热(50-65) 放量 → +1.10% vs 缩量 -0.70%   (放量=资金活跃代理, 全分数段成立)
+        # 综合信号据此修正: 放量超卖=资金进场确认(机会加分), 偏热缩量=滞涨(风险微加分)。
+        # 系数 0.3→1.0: 原 vol 项仅 ±0.09 分, 远不足以影响"机会/风险"边界, 属死权重。
         vol_conf = 0.0
-        if ind["vol_state"] == "缩量" and cs < 50:
+        if ind["vol_state"] == "放量" and cs < 50:
             vol_conf = 0.3
-        elif ind["vol_state"] == "放量" and cs > 50:
-            vol_conf = -0.3
+        elif ind["vol_state"] == "缩量" and cs > 50:
+            vol_conf = -0.2
         rs_now = ind["rs_pct_now"]
         rs_opp = (50 - rs_now) / 100.0 if (rs_now is not None and cs < 50) else 0.0
         rs_risk = (rs_now - 50) / 100.0 if (rs_now is not None and cs > 50) else 0.0
-        opp = max(0.0, 50 - cs) / 50.0 * (0.6 + 0.4 * sig_b) + vol_conf * 0.3 + rs_opp * 0.2 \
+        opp = max(0.0, 50 - cs) / 50.0 * (0.6 + 0.4 * sig_b) + vol_conf + rs_opp * 0.2 \
             + (macro * 0.1 if cs < 50 else 0)
-        risk = max(0.0, cs - 50) / 50.0 * (0.6 + 0.4 * sig_b) - vol_conf * 0.3 + rs_risk * 0.2
+        risk = max(0.0, cs - 50) / 50.0 * (0.6 + 0.4 * sig_b) - vol_conf + rs_risk * 0.2
         opp = max(0.0, min(1.0, opp))
         risk = max(0.0, min(1.0, risk))
         opp_s, risk_s = round(opp * 100), round(risk * 100)

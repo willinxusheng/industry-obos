@@ -322,8 +322,9 @@
   /* ---------- 窄屏覆盖(同 P 结构, 差异点仅此: 背离列不隐藏 + 行背景/缩进) ---------- */
   @media (max-width: 640px) {
     .qin { margin-left: 0; width: 100%; min-width: 0; }
-    /* 背离列绝不在窄屏隐藏: 它是动能转向的早期信号, 藏起来等于没有。
-       可以让路的是涨跌幅这类"锦上添花"的列。 */
+    /* 背离列窄屏保留: 展示价格与分数的形态背离(底/顶), 供用户结合分数/量能综合判断。
+       [2026-09-04] 注意: 深度回测2 未发现背离形态本身的方向预测力(勿再当作"动能转向
+       早期信号"解读, 顶背离后牛市段行业多继续走强), 见 docs/deep_backtest2。 */
     .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr { display: none; }
     .miniwrap { display: none; }
     tr.rowgrp td.c-name { background: rgba(244,246,249,.98); }
