@@ -79,8 +79,19 @@ def main():
             continue
         mature.append((r, real30))
     if not mature:
-        print("尚无成熟样本(最早预测 %s, 数据截至 %s → 需数据覆盖到 %s 之后). 请等待积累或用 walk-forward 口径."
-              % (asofs[0], ob["asof"], dates[dpos[asofs[0]] + 30] if asofs[0] in dpos else "?"))
+        # [2026-09-04] 修复: 原实现 asof 不在本地 dates 时兜底输出 "?"——日志(CI 每日)
+        # 几乎总是比本地 data/ 快照新, 该分支必命中, 导致永远无法给出成熟日期。
+        # 现在区分两种未成熟原因并给出可执行指引。
+        if asofs[0] in dpos:
+            ti = dpos[asofs[0]]
+            need = dates[ti + 30] if ti + 30 < len(dates) else "本地数据末端"
+            print("尚无成熟样本(最早预测 %s, 数据截至 %s → 需数据覆盖到 %s 之后). 请等待积累或用 walk-forward 口径."
+                  % (asofs[0], ob["asof"], need))
+        else:
+            print("尚无成熟样本: 预测日志最新 %s 早于本地数据 %s —— 请先 fetch 追平本地数据"
+                  "(python fetch_data.py + fetch_benchmark.py + compute.py) 再复核;"
+                  "或用官方 walk-forward 口径(backtest_deep.py / run_backtest)."
+                  % (asofs[-1], ob["asof"]))
         return
     dir_ok = dir_n = 0
     brier = 0.0
