@@ -322,8 +322,9 @@
   /* ---------- 窄屏覆盖(同 P 结构, 差异点仅此: 背离列不隐藏 + 行背景/缩进) ---------- */
   @media (max-width: 640px) {
     .qin { margin-left: 0; width: 100%; min-width: 0; }
-    /* 背离列绝不在窄屏隐藏: 它是动能转向的早期信号, 藏起来等于没有。
-       可以让路的是涨跌幅这类"锦上添花"的列。 */
+    /* 背离列窄屏保留: 展示价格与分数的形态背离(底/顶), 供用户结合分数/量能综合判断。
+       [2026-09-04] 注意: 深度回测2 未发现背离形态本身的方向预测力(勿再当作"动能转向
+       早期信号"解读, 顶背离后牛市段行业多继续走强), 见 docs/deep_backtest2。 */
     .c-chg5, .c-ret20, .c-ret60, .c-ret250, .c-above, .c-fdr { display: none; }
     .miniwrap { display: none; }
     tr.rowgrp td.c-name { background: rgba(244,246,249,.98); }
@@ -506,8 +507,10 @@ setTimeout(function () {
     return '#98a2b3';
   }
   function divTxt(d) {
-    if (d === 'bullish') return '<span style="color:#3c8168;font-weight:600">看涨</span>';
-    if (d === 'bearish') return '<span style="color:#b1493f;font-weight:600">看跌</span>';
+    // [2026-09-04] "看涨/看跌"→"底/顶背离"(纯形态描述): 深度回测2 未发现背离形态的方向
+    // 预测力稳定成立(顶背离后 2025-26 牛市段行业多继续走强), 去掉会误导的方向词。
+    if (d === 'bullish') return '<span style="color:#3c8168;font-weight:600">底背离</span>';
+    if (d === 'bearish') return '<span style="color:#b1493f;font-weight:600">顶背离</span>';
     return '<span style="color:#98a2b3">-</span>';
   }
   function pct(v, d) {
@@ -987,10 +990,24 @@ setTimeout(function () {
     }
 
     var vr = x.vol_ratio, vst = x.vol_state;
-    var volTxt = '量能：当前量比 ' + (typeof vr === 'number' ? vr.toFixed(2) : '-') + '（' + vst + '）'
-      + (vst === '放量' ? '，超买放量需警惕' : (vst === '缩量' ? '，超卖缩量或近底部' : '')) + '。';
-    var divTxt2 = x.divergence === 'bullish' ? '⚠️ <b style="color:#3c8168">看涨背离</b>：近期价格新低但分位未新低，下跌动能或衰竭，逆向关注。'
-      : x.divergence === 'bearish' ? '⚠️ <b style="color:#b1493f">看跌背离</b>：近期价格新高但分位未新高，上涨动能或衰竭，注意风险。'
+    // [2026-09-04] 量能解读修正(深度回测2): 原"超买放量需警惕/超卖缩量近底部"方向反了。
+    // 实测 31 行业×1301 日: 深冷+放量 20d 超额 +3.46% vs 缩量 +0.46%(缩量阴跌=无人接盘);
+    // 偏热放量未见回落证据。见 docs/deep_backtest2。
+    var volTxt = '量能：当前量比 ' + (typeof vr === 'number' ? vr.toFixed(2) : '-') + '（' + vst + '）';
+    if (vst === '放量') {
+      volTxt += (typeof lastScore === 'number' && lastScore < 50)
+        ? '，放量超卖=资金进场迹象，历史 20 日显著跑赢大盘。'
+        : '，高位放量未见"放量即见顶"的历史证据。';
+    } else if (vst === '缩量') {
+      volTxt += (typeof lastScore === 'number' && lastScore < 50)
+        ? '，缩量超卖反弹弱，需放量确认（历史 20 日超额≈0）。'
+        : '，偏热缩量=滞涨（历史超额为负）。';
+    } else { volTxt += '。'; }
+    // [2026-09-04] 背离语义修正(深度回测2): 原"看跌背离=注意风险"与实测相反——
+    // 顶背离在 2025-26 牛市段触发占 90%, 之后行业多继续走强(超额恒≥0); 底背离超额有限,
+    // 仅"深冷+放量"时显著。改为纯形态描述, 不做方向断言。
+    var divTxt2 = x.divergence === 'bullish' ? '<b style="color:#3c8168">底背离形态</b>：价格创近端新低但分数未创新低。历史统计：单看此形态超额有限，深冷+放量时方显著，宜作辅助参考。'
+      : x.divergence === 'bearish' ? '<b style="color:#b1493f">顶背离形态</b>：价格创近端新高但分数未创新高。2021-09至2026-09 回测未发现该形态后回落的一致性证据（牛市段后行业多继续走强），勿按"见顶"单独减仓。'
       : '近期无明显量价/分位背离。';
     var sigTxt2 = '综合信号：<b style="color:' + sigColor(x.sig_label) + '">' + x.sig_label + '</b>（机会度 ' + (x.opp_score == null ? '-' : x.opp_score) + ' / 风险度 ' + (x.risk_score == null ? '-' : x.risk_score) + '）。';
 
@@ -999,6 +1016,9 @@ setTimeout(function () {
     var puTxt = (typeof pu === 'number' && isFinite(pu))
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
         + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
+        + ((typeof lastScore === 'number' && lastScore >= 40 && lastScore <= 60)
+          ? '。<b style="color:#41617e">中性区提示</b>：当前处 40-60 震荡带，历史该区方向准确率≈55%（近随机）、p_up 校准偏差大，请以中位升降方向为主'
+          : '')
       : '';
     var mth = DATA.method || {};
     var mainDesc = mth.forecast_main || '跨行业类比推演';
