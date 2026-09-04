@@ -258,7 +258,8 @@ try {
   if (SUB) {
     /* [2026-09-03] 两级可展开契约(默认全收起):
      *  1) 一级行数必须恰好 = 一级分组数(31), 一个不多一个不少
-     *  2) 一级行必须按偏离度降序(同步时用自身分数, 降级时用组内最极端二级的偏离度)
+     *  2) [2026-09-04] 一级行按当前分 cur_score 从高到低(同步用自身分数,
+     *     降级占位时用组内最高的二级当前分 —— 与 sub_app.js 的 parScore 同款回退)
      *  3) 默认全收起 -> 首屏不得出现任何二级行(否则又退回 109 行平铺)
      *  4) 每行的迷你热力条格子数必须 = 该组二级行业数, 合计覆盖全部 109 个(总览信息不缩水) */
     const nParents = new Set(data.industries.map(x => x.parent || '其他')).size;
@@ -270,22 +271,22 @@ try {
     }
     const kidsOf = {};
     for (const x of data.industries) (kidsOf[x.parent || '其他'] = kidsOf[x.parent || '其他'] || []).push(x);
-    function parDev(name) {
+    function parSc(name) {
       const p = byParent[name];
-      if (p && typeof p.cur_score === 'number' && isFinite(p.cur_score)) return Math.abs(p.cur_score - 50);
+      if (p && typeof p.cur_score === 'number' && isFinite(p.cur_score)) return p.cur_score;
       return (kidsOf[name] || []).reduce(function (m, x) {
-        var s = (typeof x.cur_score === 'number' && isFinite(x.cur_score)) ? x.cur_score : 50;
-        return Math.max(m, Math.abs(s - 50));
-      }, 0);
+        var s = (typeof x.cur_score === 'number' && isFinite(x.cur_score)) ? x.cur_score : -1;
+        return Math.max(m, s);
+      }, -1);
     }
-    let prevDev = Infinity;
+    let prevSc = Infinity;
     for (const name of shownParents) {
-      const d = parDev(name);
-      if (d > prevDev + 1e-9) {
-        console.error('parent rows not sorted by deviation desc at %s (%s > %s)', name, d, prevDev);
+      const d = parSc(name);
+      if (d > prevSc + 1e-9) {
+        console.error('parent rows not sorted by cur_score desc at %s (%s > %s)', name, d, prevSc);
         process.exit(1);
       }
-      prevDev = d;
+      prevSc = d;
     }
     let miniSum = 0;
     for (const s of rbh.split('<tr').slice(1)) {
@@ -301,7 +302,7 @@ try {
     if (miniSum !== data.industries.length) {
       console.error('mini bars cover %d subs, expected all %d', miniSum, data.industries.length); process.exit(1);
     }
-    console.log('two-level tree OK: %d parent rows collapsed, sorted by deviation, mini bars cover all %d subs%s',
+    console.log('two-level tree OK: %d parent rows collapsed, sorted by cur_score desc, mini bars cover all %d subs%s',
       shownParents.length, data.industries.length, parentsSynced ? '' : ' (degraded: no PARENTS)');
     // 档位 chips + 表格说明必须渲染(否则筛选/搜索入口缺失), 且说明里必须有展开提示
     for (const id of ['sChips', 'tNote']) {

@@ -2,7 +2,8 @@
  *
  * 背景：二级门禁的关键断言是**数据驱动 + 代码驱动**混合的——
  *   1) 首屏必须恰好 31 个一级行业行，二级全部收起（不是 109 行平铺）
- *   2) 一级行必须按偏离度 |score-50| 降序（越极端越靠前）
+ *   2) 一级行必须按当前分 cur_score 从高到低（[2026-09-04] 原为偏离度 |score-50| 降序，
+ *      按用户要求改为榜单式：超买端在顶、超卖端在底）
  *   3) 迷你热力条格子合计必须覆盖全部 109 个二级行业（总览信息不缩水）
  *   4) 一级/二级数据不同步时走降级路径：一级指标列一律 "-" 且必须如实披露
  * 这类断言最大的风险是：今天的数据恰好让它绿了，换一天市况就误报 FAIL（拖垮每日刷新）；
@@ -65,7 +66,7 @@ function setScore(x, s) {
 }
 function mid(x) { return (x.cold_line + x.hot_line) / 2; }
 
-/* 一级行业分数打乱：让"文件顺序"绝不等于"偏离度降序"。
+/* 一级行业分数打乱：让"文件顺序"绝不等于"当前分降序"。
  * 排序断言只在这样的用例下才有意义——若父数据本身就有序，去掉 sort 也看不出来，断言就成了假绿。 */
 function shufflePar(p) {
   p.industries.forEach(function (x, i) { setScore(x, 50 + ((i * 13) % 7) - 3); });
@@ -169,10 +170,10 @@ for (const c of cases) {
 console.log('\n===== 反向对照：故意改坏 app，门禁必须判红（否则断言是假绿）=====');
 const broken = [
   {
-    /* 用 E 的一级打乱数据：文件顺序 ≠ 偏离度降序，去掉 sort 立刻露馅 */
-    name: '坏1 去掉一级行偏离度排序', key: 'E', sync: true, par: shufflePar,
+    /* 用 E 的一级打乱数据：文件顺序 ≠ 当前分降序，去掉 sort 立刻露馅 */
+    name: '坏1 去掉一级行当前分排序', key: 'E', sync: true, par: shufflePar,
     patch: s => s.replace(
-      'return out.slice().sort(function (a, b) { return parDeviation(b) - parDeviation(a); });',
+      'return out.slice().sort(function (a, b) { return parScore(b) - parScore(a); });',
       'return out.slice();')
   },
   {

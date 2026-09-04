@@ -82,7 +82,7 @@ def split_scenes(out):
 
 
 def patch(fname, pairs):
-    """pairs = [(old, new), ...]，全部必须命中，否则抛错（已还原）。"""
+    """pairs = [(old, new), ...]，全部必须命中，否则抛错（已还原并清理备份）。"""
     src = os.path.join(REPO, fname)
     bak = os.path.join(REPO, '.rb_' + fname + '.bak')
     shutil.copyfile(src, bak)
@@ -94,6 +94,10 @@ def patch(fname, pairs):
             s = s.replace(old, new, 1)
     except BaseException:
         shutil.copyfile(bak, src)
+        try:
+            os.remove(bak)
+        except OSError:
+            pass
         raise
     io.open(src, 'w', encoding='utf-8').write(s)
     return bak
@@ -111,6 +115,14 @@ def restore(fname, bak):
 
 def main():
     results = []
+
+    # 启动时内容快照：终检以此为准（不能依赖 git status —— 开发者本地常带着
+    # 未提交的合法改动在跑本脚本，git 状态永远是 M，会误报"还原不干净"）
+    TARGETS = ['app.js', 'sub_app.js']
+    snap = {}
+    for fname in TARGETS:
+        with io.open(os.path.join(REPO, fname), encoding='utf-8') as f:
+            snap[fname] = f.read()
 
     # ---------- 坏法 A：主看板 + 二级看板（fcNote 挪回图表回调） ----------
     for fname, board in [('app.js', '主看板'), ('sub_app.js', '二级看板')]:
@@ -175,13 +187,13 @@ def main():
         print('❌ 工作区残留备份文件：%s（还原逻辑有 bug，不能提交）' % left)
         return 1
 
-    # 终检：两个源码文件必须与 git HEAD 一致（补丁全部还原）
-    dirty = subprocess.run(
-        ['git', '-C', REPO, 'status', '--porcelain', '--', 'app.js', 'sub_app.js'],
-        capture_output=True, text=True).stdout.strip()
-    if dirty:
-        print('❌ 源码未还原干净，git 状态：%r —— 门禁自身就是脏的，判失败' % dirty)
-        return 1
+    # 终检：两个源码文件必须与"脚本启动时"的内容完全一致（所有补丁均已还原）。
+    # 逐字符比对而不是 git status —— 前者连"运行前就有的合法改动被意外覆盖"也能抓到。
+    for fname in TARGETS:
+        cur = io.open(os.path.join(REPO, fname), encoding='utf-8').read()
+        if cur != snap[fname]:
+            print('❌ %s 与启动时快照不一致 —— 补丁未还原干净（残留破坏），判失败' % fname)
+            return 1
 
     print()
     print('总判定：', '✅ 全部抓到（门禁有效）' if all(results) else '❌ 存在假绿，需继续加固')

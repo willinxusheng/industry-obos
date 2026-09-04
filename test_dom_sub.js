@@ -96,24 +96,24 @@ ok(q('#sChips .gchip').length === 6, '档位 chips = 全部 + 5 档', q('#sChips
 ok(q('#gChips').length === 0, '原一级分组 chips 已移除（与行点击展开重复）');
 ok(q('#heatBody').length === 0, '原热力总览模块已移除');
 
-console.log('--- 2. 一级行排序（偏离 50 分降序）---');
-function parDev(name) {
+console.log('--- 2. 一级行排序（当前分从高到低）---');
+function parSc(name) {
   const tr = grpByName(name);
   const td = tr && tr.querySelector('td.c-score');
   const v = td ? parseFloat(td.textContent) : NaN;
-  if (isFinite(v)) return Math.abs(v - 50);
-  return (parentsOf[name] || []).reduce((m, x) => Math.max(m, Math.abs((x.cur_score || 50) - 50)), 0);
+  if (isFinite(v)) return v;
+  return (parentsOf[name] || []).reduce((m, x) => Math.max(m, (x.cur_score == null ? -1 : x.cur_score)), -1);
 }
 const gnames = grpRows().map(t => t.getAttribute('data-g'));
 let sorted = true, prev = Infinity;
 for (const n of gnames) {
-  const d = parDev(n);
+  const d = parSc(n);
   if (d > prev + 1e-9) sorted = false;
   prev = d;
 }
-ok(sorted, '一级行按偏离度降序（最极端的板块排最前）');
-ok(gnames[0] === gnames.slice().sort((a, b) => parDev(b) - parDev(a))[0],
-  '首行是最极端一级: ' + gnames[0]);
+ok(sorted, '一级行按当前分从高到低（超买端在顶部）');
+ok(gnames[0] === gnames.slice().sort((a, b) => parSc(b) - parSc(a))[0],
+  '首行是当前分最高一级: ' + gnames[0]);
 
 console.log('--- 3. 展开 / 收起 交互 ---');
 const first = gnames[0];

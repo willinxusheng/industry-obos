@@ -6,6 +6,8 @@
  *   行业两个分数"), 行内嵌迷你热力条显示组内二级冷热分布, 替代原独立的热力总览模块。
  *   背景: 109 个二级平铺会把极值埋掉(常态 ~78% 为中性); 改为"一级总览 + 按需下钻"后
  *   首屏 31 行, 既不藏信息(109 个一个不少, 只是收起来了)也不吵。
+ * [2026-09-04] 榜单式排名: 删除"层级"列(一级行显示'申万一级'/二级行显示父级名, 属冗余
+ *   信息——展开态下行的归属天然由所在分组决定), 排序统一按当前分 cur_score 从高到低。
  *   PARENTS 为空 = 一级/二级数据不同步, 一级行退化为占位、指标列一律 "-",
  *   绝不用旧时点的分数冒充当前值(错误的数字比缺失更危险)。
  * 红=超买=危险, 绿=超卖=机会 (A股红涨绿跌约定)
@@ -168,25 +170,25 @@
 
   /* ---------- [2026-09-03] 视图收敛: 状态档位多选 + 关键词搜索 ----------
    * 默认只勾选非中性四档(超买/偏热/偏冷/超卖), 中性档不勾 -> 表格默认不渲染中性行业;
-   * 排序改为按 |cur_score-50| 偏离度降序, 越极端越靠前(逆向投资只关心两端)。
-   * 档位全选或全不选时等价于"全部"(避免出现空表这种无意义状态)。 */
+   * 档位全选或全不选时等价于"全部"(避免出现空表这种无意义状态)。
+   * [2026-09-04] 排序按用户要求改为榜单式: 当前分 cur_score 从高到低 ——
+   * 顶部 = 超买最热(追高风险区), 底部 = 超卖最冷(逆向观察区), 一眼可知今天谁最极端。 */
   var STATE_KEYS = ['超买', '偏热', '中性', '偏冷', '超卖'];
   var STATE_COLOR = { '超买': COLORS.ob, '偏热': COLORS.hot, '中性': COLORS.mid, '偏冷': COLORS.cold, '超卖': COLORS.os };
   /* 默认全选: 首屏只有 31 个一级行业, 信息量可接受, 无需再折叠 */
   var selStates = { '超买': 1, '偏热': 1, '中性': 1, '偏冷': 1, '超卖': 1 };
   var curQ = '';
 
-  function deviation(x) {
-    var s = (typeof x.cur_score === 'number' && isFinite(x.cur_score)) ? x.cur_score : 50;
-    return Math.abs(s - 50);
+  function sKey(x) {
+    return (typeof x.cur_score === 'number' && isFinite(x.cur_score)) ? x.cur_score : -1;
   }
-  function byDeviation(list) {
-    return list.slice().sort(function (a, b) { return deviation(b) - deviation(a); });
+  function byScore(list) {
+    return list.slice().sort(function (a, b) { return sKey(b) - sKey(a); });
   }
-  /* 一级行的排序键: 有真实分数用其自身偏离度; 降级占位时用组内最极端二级的偏离度 */
-  function parDeviation(p) {
-    if (typeof p.cur_score === 'number' && isFinite(p.cur_score)) return Math.abs(p.cur_score - 50);
-    return (KIDS[p.name] || []).reduce(function (m, x) { return Math.max(m, deviation(x)); }, 0);
+  /* 一级行的排序键: 有真实分数用其自身当前分; 降级占位时用组内最高的二级当前分(该组最强代表) */
+  function parScore(p) {
+    if (typeof p.cur_score === 'number' && isFinite(p.cur_score)) return p.cur_score;
+    return (KIDS[p.name] || []).reduce(function (m, x) { return Math.max(m, sKey(x)); }, -1);
   }
   function selKeys() { return STATE_KEYS.filter(function (k) { return selStates[k]; }); }
   function useAllStates() {
@@ -208,7 +210,7 @@
       });
     });
     if (q) out.forEach(function (p) { openSet[p.name] = 1; });
-    return out.slice().sort(function (a, b) { return parDeviation(b) - parDeviation(a); });
+    return out.slice().sort(function (a, b) { return parScore(b) - parScore(a); });
   }
 
   /* ---------- 数据质量门禁 ---------- */
@@ -349,19 +351,18 @@
     var nKid = 0;
     pars.forEach(function (p, i) {
       var nm = String(p.name || '-');
-      var kids = byDeviation(KIDS[nm] || []);
+      var kids = byScore(KIDS[nm] || []);
       nKid += kids.length;
       var open = !!openSet[nm];
       html += '<tr class="rowgrp' + (open ? ' open' : '') + '" data-g="' + nm + '">'
         + '<td class="rank c-rank">' + (i + 1) + '</td>'
         + '<td class="lft c-name"><span class="arw">' + (open ? '▾' : '▸') + '</span>'
         + '<b>' + nm + '</b>' + miniBar(nm) + '<span class="cnt">' + kids.length + '</span></td>'
-        + '<td class="lft c-parent">申万一级</td>'
         + cellsHtml(p) + '</tr>';
       if (!open) return;
       if (!kids.length) {
         html += '<tr class="rowsub"><td class="rank c-rank"></td>'
-          + '<td class="lft c-name" colspan="15" style="color:#98a2b3;padding-left:22px">'
+          + '<td class="lft c-name" colspan="14" style="color:#98a2b3;padding-left:22px">'
           + '该一级行业下暂无细分行业数据</td></tr>';
         return;
       }
@@ -371,7 +372,6 @@
         html += '<tr class="rowsub' + dim + (x.code === curCode ? ' sel' : '') + '" data-code="' + x.code + '">'
           + '<td class="rank c-rank">' + (i + 1) + '.' + (j + 1) + '</td>'
           + '<td class="lft c-name">' + x.name + '</td>'
-          + '<td class="lft c-parent">' + (x.parent || '-') + '</td>'
           + cellsHtml(x) + '</tr>';
       });
     });
@@ -380,7 +380,7 @@
       var txt = '共 <b>' + pars.length + '</b> 个一级行业，下属 <b>' + nKid + '</b> 个细分行业';
       if (curQ) txt += '（搜索「' + curQ + '」，已自动展开命中的一级）';
       else if (!useAllStates()) txt += '（已按档位筛选）';
-      txt += ' · 按<b>偏离 50 分的极端程度</b>排序 · <b>点击一级行业行</b>展开其下属细分行业';
+      txt += ' · 按<b>当前分从高到低</b>排序 · <b>点击一级行业行</b>展开其下属细分行业';
       /* 一级数据缺失必须如实告知, 否则用户会误以为"所有一级行业都是中性/无信号" */
       if (!HAS_PAR) {
         txt += ' · <b style="color:#c08a3e">一级行业指标暂不可用</b>（一级与二级数据不同步，待下次刷新自动恢复）';
@@ -388,7 +388,7 @@
       noteEl.innerHTML = txt;
     }
     if (!pars.length) {
-      document.getElementById('rankBody').innerHTML = '<tr><td colspan="16" style="text-align:center;'
+      document.getElementById('rankBody').innerHTML = '<tr><td colspan="15" style="text-align:center;'
         + 'color:var(--sub);padding:26px">'
         + (curQ ? '未找到匹配「' + curQ + '」的行业' : '当前筛选条件下没有行业') + '</td></tr>';
       return;
@@ -397,8 +397,8 @@
   }
 
   /* ---------- 单行业详情图（与主看板完全同构） ---------- */
-  /* 默认详情 = 当前最极端的行业(偏离 50 分最大), 打开即见当日最值得看的一个 */
-  var curCode = INDS.slice().sort(function (a, b) { return deviation(b) - deviation(a); })[0].code;
+  /* 默认详情 = 当前分最高的二级行业(与排名榜首一致), 打开即见当日最热的一个 */
+  var curCode = byScore(INDS)[0].code;
   function buildDetailOption(x) {
     var _vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1280;
     var IS_MOBILE = _vw <= 640;
