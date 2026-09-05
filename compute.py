@@ -66,6 +66,12 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     n_dt = len(bdates)
     bset = set(bdates)
     miss = dup = zero_c = zero_v = unsorted = 0
+    # [2026-09-05] asof 日(=基准最后一日)无收盘数据的行业数。
+    #   asof 取自基准而非行业数据本身, 若行业整体滞后一天(数据源延迟), 看板会宣称一个
+    #   自己根本没有数据的截止日, 且 daily.yml 的 freshness gate 会误判"已含最新交易日"
+    #   而不再重试 —— 双重说谎。故单独统计, 整体缺失时按致命处理。
+    miss_last = 0
+    miss_last_codes = []
     spans = []
     fq_keys = set()
     vacuum = {}  # [2026-09-03 二级模式] 指数口径真空期: 缺失全部集中在"连续有效段起点"之前
@@ -87,6 +93,9 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
                                 "valid_from": bdates[last_miss_idx + 1]}
                 n_miss_code = 0
         miss += n_miss_code
+        if bdates[-1] not in cmap:
+            miss_last += 1
+            miss_last_codes.append(v.get("name") or code)
         dup += len(ds) - len(set(ds))
         zero_c += sum(1 for r in rows if r[2] is None or r[2] <= 0)
         zero_v += sum(1 for r in rows if r[5] is None or r[5] < 0)
@@ -131,12 +140,32 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     bad_fq = sorted(k for k in fq_keys if k not in ("day", "unknown"))
     if bad_fq:
         issues.append("检测到复权序列 %s: 复权价会随未来除权事件重算历史, 历史指标不可复现" % ",".join(bad_fq))
+    # [2026-09-05] asof 日无数据的行业: 看板会宣称一个自己没有数据的截止日。
+    #   整体缺失 = 数据源整体延迟(重试可解) -> 按致命处理, 让 daily.yml 失败并 30 分钟后重试;
+    #   个别缺失 = 该行业可能已停止发布(重试无解) -> 只点名披露, 不因此阻断整条流水线
+    #   (否则一个停更的行业会让看板永久无法更新, 比披露出来更糟)。
+    if miss_last and miss_last == n_ind:
+        issues.append("全部 %d 个行业在 asof 日(%s) 无收盘数据：行业数据整体滞后于基准，"
+                      "若按此发布，宣称的截止日与实际数据不符，且会被误判为已最新而停止重试"
+                      % (miss_last, bdates[-1]))
+    elif miss_last:
+        issues.append("%d 个行业在 asof 日(%s) 无收盘数据(可能已停止发布)，其分数止于前一交易日：%s"
+                      % (miss_last, bdates[-1], "、".join(sorted(miss_last_codes)[:8])
+                         + ("等" if miss_last > 8 else "")))
     cover = 1.0 - (miss / float(n_ind * n_dt)) if n_ind * n_dt else 0.0
+    # [2026-09-05] 结构性/口径性问题必须 FAIL —— 它们不是"数据脏了一点"，而是"看板在说谎"：
+    #   行业数残缺、复权口径污染(PIT 不可复现)、asof 日整体无数据。
+    #   旧公式只把 dup / 零值 / 乱序 当 FAIL，这三类因此全部落进 WARN；而 WARN 不阻断部署
+    #   （门禁只在 FAIL 时 SystemExit），等于这三条防御形同虚设。受控注入实测确认：
+    #   26/31 行业、fq_key=qfq、全行业缺末日 三种故障注入后均为 WARN 放行。
+    fatal = bool(dup or zero_c or unsorted or n_ind != expect_n or bad_fq
+                 or (miss_last and miss_last == n_ind))
     return {
         "n_industries": n_ind, "n_dates": n_dt,
         "span": [bdates[0], bdates[-1]],
         "align_coverage": round(cover, 5),
         "missing_cells": miss, "dup_dates": dup,
+        "missing_last_day": miss_last,
         "prefix_vacuum": vacuum,
         "nonpositive_close": zero_c, "negative_volume": zero_v,
         "unsorted_industries": unsorted,
@@ -146,7 +175,8 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         "calendar_cover_until": CAL_COVER_UNTIL,
         "forecast_last_date": fc_last,
         "issues": issues,
-        "status": "PASS" if not issues else ("WARN" if cover > 0.999 and not (dup or zero_c or unsorted) else "FAIL"),
+        # fatal 见上方说明：结构性/口径性问题一律 FAIL，不再降级为可被部署的 WARN。
+        "status": "PASS" if not issues else ("WARN" if cover > 0.999 and not fatal else "FAIL"),
     }
 
 
@@ -357,6 +387,15 @@ def main(sub_mode=False):
     quality = quality_gate(raw, ref_dates, bclose, expect_n=expect_n,
                            relax_prefix_vacuum=sub_mode)
     # [E] 跨基准一致性软告警: 基准前复权而行业未复权 -> rs_pct 相对强度跨基准偏估
+    # [2026-09-05] 基准口径缺失时不能静默：data/benchmark.json 是入库的历史快照，
+    #   仓库里那份没有 fq_key（字段是后来加的）。用它跑 compute 会让下面的跨基准一致性
+    #   告警永远不可能触发（bfq=None 恒不等于 "qfq"）—— 防御形同虚设且毫无提示。
+    if bfq is None:
+        quality["issues"].append(
+            "基准 benchmark.json 缺 fq_key 字段，无法核验跨基准复权口径一致性"
+            "（多半用的是仓库内的历史快照，而非 fetch_benchmark.py 当次产物）")
+        if quality["status"] == "PASS":
+            quality["status"] = "WARN"
     if bfq == "qfq" and "day" in (quality.get("price_basis") or ""):
         quality["issues"].append(
             "基准沪深300为前复权(fq_key=qfq)，与行业未复权(day)口径不一致，rs_pct 相对强度将跨基准偏估")

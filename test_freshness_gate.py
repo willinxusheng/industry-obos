@@ -38,8 +38,17 @@ except ImportError:
     print('SKIP: pyyaml 未安装')
     sys.exit(0)
 
-# 改动这些文件意味着产物必须重建（与 daily.yml 里的 grep 清单保持一致）
-SRC_FILES = ('app.js', 'sub_app.js', 'build_html.py', 'template.html', 'template_sub.html')
+# 改动这些文件意味着产物必须重建（与 daily.yml 里的 grep 清单保持一致，逐字对应）。
+# [2026-09-05] 清单从"前端源码"扩到"计算/取数层 + 本 job 内的门禁"：
+#   只列前端时，改了 compute.py / obos_core.py / fetch_*.py 而数据又已是最新，
+#   gate 判 skip，算法改动要卡到下一个有新交易日的日子才上线（周末改算法得等好几天）。
+#   test_render.js / gate_edge_test.js 挂在同一 job 内，skip 时它们根本不跑，
+#   改了断言却没人执行，等同门禁失效。（test_dom_*.js / test_antifake 属独立 job，不列入。）
+# ⚠️ 改 daily.yml 的 grep 清单必须同步改这里，否则本门禁立刻判红 —— 这正是它存在的意义。
+SRC_FILES = ('app.js', 'sub_app.js', 'build_html.py', 'template.html', 'template_sub.html',
+             'compute.py', 'obos_core.py',
+             'fetch_data.py', 'fetch_sub_data.py', 'fetch_benchmark.py',
+             'test_render.js', 'gate_edge_test.js')
 
 fail = 0
 def bad(msg):

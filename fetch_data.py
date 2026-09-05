@@ -8,7 +8,13 @@
 任一源成功即用；单行业三源全失败计入 fail；>2 行业失败则整体 abort，避免部署部分残缺数据。
 
 口径统一：所有源均取「不复权日线」(fq_key="day")，与 [A5] PIT 复现纪律一致
-（腾讯 day 键、东财 fqt=0、新浪 sw 均为不复权，经验证腾讯 qfq 与 day 逐日完全一致）。
+（腾讯 URL 末位复权参数显式传 day、东财 fqt=0、新浪 sw 均为不复权）。
+
+[2026-09-05] 修正：腾讯的复权参数原先写的是 qfq，与本文件注释、fetch_benchmark.py
+的基准口径、以及东财/新浪回退源的口径全部不一致。实测该接口对复权参数无响应
+（传 qfq 仍返回 day 键），所以长期没出事；但这是"靠对方不理我"在兜底——一旦腾讯
+哪天开始响应复权参数，行业数据会瞬间变成前复权，而基准仍是不复权，rs_pct 相对强度
+跨基准偏估、历史指标不可复现（违背 PIT）。故显式改为 day，三源口径真正统一。
 """
 import datetime
 import json
@@ -60,7 +66,7 @@ def parse_tencent(code):
     的 [A5] 复权断言 FAIL —— 绝不让"前复权数据被静默标成 day"绕过 PIT 历史可复现纪律。
     """
     url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-           "?param=pt01%s,day,,,1300,qfq") % code
+           "?param=pt01%s,day,,,1300,day") % code
     d = get_json(url)
     node = (d.get("data", {}) or {}).get("pt01" + code) or {}
     key = "qfqday" if "qfqday" in node else "day"

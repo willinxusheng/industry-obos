@@ -159,7 +159,7 @@ def get_json(url, tries=5):
 def parse_tencent(code):
     """腾讯 newfqkline；不复权(day 键)；如实回传复权键，逻辑同 fetch_data.parse_tencent。"""
     url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-           "?param=pt01%s,day,,,1300,qfq") % code
+           "?param=pt01%s,day,,,1300,day") % code
     d = get_json(url)
     node = (d.get("data", {}) or {}).get("pt01" + code) or {}
     key = "qfqday" if "qfqday" in node else "day"

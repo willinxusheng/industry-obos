@@ -165,10 +165,19 @@ jobs:
           SRC_HIT=""
           if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ -n "$AFTER_SHA" ]; then
             # 分支首次推送时 before 是全 0，没有 diff 基线，跳过检测即可（产物本来就是新的）
+            # [2026-09-05] 清单补上"计算/取数层"与"本 job 内的门禁"：
+            #   原清单只有前端源码，于是改了 compute.py / obos_core.py / fetch_*.py 之后，
+            #   只要当时数据已是最新（周末、节假日、或当日已更新过），gate 就判 skip ——
+            #   算法改动要一直卡到下一个有新交易日的日子才上线，周末改算法得等好几天。
+            #   本 job 内的 test_render.js / gate_edge_test.js 同理：skip 时它们不跑，
+            #   改了断言却没人执行，等于门禁在新数据到来前一直是"没跑过"的状态。
+            #   （test_dom_*.js 与 test_antifake 属独立 dom-gates job，每次都跑，无需列入。）
+            #   命中后走的是完整链路（重算 + 重建），这正是改算法/取数所需要的。
+            #   ⚠️ 改动此清单必须同步 test_freshness_gate.py 的 SRC_FILES，否则那道门禁判红。
             case "$BEFORE_SHA" in
               0000000000000000000000000000000000000000) ;;
               *) SRC_HIT=$(git diff --name-only "$BEFORE_SHA".."$AFTER_SHA" 2>/dev/null \
-                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html)$' || true) ;;
+                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|test_render\.js|gate_edge_test\.js)$' || true) ;;
             esac
             if [ -n "$SRC_HIT" ]; then
               echo "push 命中前端源码: $(printf '%s' "$SRC_HIT" | tr '\n' ' ')"
@@ -270,7 +279,11 @@ jobs:
           ASOF_BEFORE: ${{ steps.fresh.outputs.asof_before }}
         run: |
           NEW=$(python3 -c "import json;print((json.load(open('data/industry_obos.json')).get('asof','') or ''))")
-          CUT=$(python3 -c "import datetime;print((datetime.date.today()-datetime.timedelta(days=4)).strftime('%Y-%m-%d'))")
+          # [2026-09-05] 必须按北京时间(UTC+8)取"今天"，不能直接用 date.today()。
+          #   runner 是 UTC：北京 00:00-08:00（UTC 前一日 16:00-24:00）的凌晨补更窗口里，
+          #   date.today() 会比北京时间慢一天，cutoff 因此松动一天（名义 4 天实际 5 天），
+          #   与上面 Freshness gate 的北京口径不一致，纵深防御被悄悄放宽。
+          CUT=$(python3 -c "import datetime;print((datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date()-datetime.timedelta(days=4)).strftime('%Y-%m-%d'))")
           echo "asof_new=$NEW asof_before=$ASOF_BEFORE cutoff>=$CUT"
           # 把本次构建产出的 asof 传给下游验收步骤。
           # ⚠️ 验收绝不能再写死"今天"：凌晨补更窗口产出的是「上一交易日」数据，
