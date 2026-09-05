@@ -133,9 +133,16 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
             fc_last = fd[-1]
     except Exception:
         fc_last = ""
-    if fc_last and fc_last > CAL_COVER_UNTIL:
-        issues.append("预测窗口(%s)超出交易日历覆盖(%s)：未来交易日退化为仅排除周末，会把节假日误当交易日，"
-                      "请补充 obos_core.HOLIDAYS 表" % (fc_last, CAL_COVER_UNTIL))
+    # [2026-09-05] 阈值必须用 CAL_FULL_UNTIL(官方安排完整的年份末), 不能用 CAL_COVER_UNTIL。
+    #   后者由 max(HOLIDAYS 里的年份) 推导 —— HOLIDAYS_2027 只要塞了元旦/劳动/国庆这 13 天,
+    #   CAL_COVER_UNTIL 就变成 2027-12-31, 于是"日历覆盖到 2027 年底", 预警要等到
+    #   asof > 2027-11 才触发。可 2027 年缺的是春节/清明/端午/中秋, 预测窗口从
+    #   asof≈2026-11-16 起就会跨进 2027 年并撞上这些缺失 —— 预警整整晚一年, 等于没有。
+    #   CAL_FULL_UNTIL 是"官方安排已确定的年份末", 才对应"此后只剩元旦/劳动/国庆固定段"。
+    if fc_last and fc_last > CAL_FULL_UNTIL:
+        issues.append("预测窗口(%s)超出官方日历完整覆盖(%s)：此后年份仅含元旦/劳动节/国庆固定段，"
+                      "春节/清明/端午/中秋会被当作交易日，预测日期系统性错位，"
+                      "请补充 obos_core.HOLIDAYS_20XX 表" % (fc_last, CAL_FULL_UNTIL))
     # [A5] 复权口径断言: 复权序列会随未来除权事件整体重算历史 -> 历史指标不可复现(违背 PIT)
     bad_fq = sorted(k for k in fq_keys if k not in ("day", "unknown"))
     if bad_fq:

@@ -19,10 +19,12 @@ node 与 jsdom 的定位：优先 OBO_NODE 环境变量 -> managed node 路径(�
 PATH 里的 node(CI)；NODE_PATH 只在本地 managed workspace 存在时注入，
 CI 上 jsdom 已 npm install 到仓库根，node 自己能找到。
 """
+import atexit
 import io
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -31,6 +33,45 @@ GATE = 'test_dom_noseries.js'
 FC_ANCHOR = "    renderFcNote(x);\n"
 NOTE_LINE = ("      seriesNote('详情曲线数据加载失败（网络问题）。<br>"
              "上方表格数据不受影响，可刷新或稍后重试。');\n")
+# 会就地改坏再还原的源码文件（self_heal 也用这份清单）
+TARGETS = ['app.js', 'sub_app.js']
+# 坏补丁留下的标记，用于启动时自检"上次是不是被中断了"
+BROKEN_MARK = 'BROKEN:'
+
+# 当前已打补丁、尚未还原的文件 -> 备份路径
+_ACTIVE = {}
+
+
+def _emergency_restore(signum=None, frame=None):
+    """被中断时还原所有未还原的补丁。
+
+    [2026-09-05] 实测教训：本脚本要连跑 4 次 jsdom（每次加载 MB 级构建产物），
+    内存吃紧时会被 OOM killer 直接 SIGKILL。SIGKILL 不可捕获，连 finally 都不会执行，
+    于是"故意植入的坏代码"就留在了 app.js / sub_app.js 里 —— 若此时误提交，
+    等于把回归当正式代码推上去。故补三层：
+      ① 这里：SIGTERM/SIGINT 可捕获，先还原再退出；
+      ② atexit：正常退出路径的兜底；
+      ③ 两者都失效（真 SIGKILL）时，靠启动时 self_heal() 自愈。
+    """
+    for fname in list(_ACTIVE):
+        bak = _ACTIVE.pop(fname)
+        try:
+            if os.path.exists(bak):
+                shutil.copyfile(bak, os.path.join(REPO, fname))
+                os.remove(bak)
+        except OSError:
+            pass
+    if signum is not None:
+        # 信号处理器里抛异常没意义，直接带非 0 退出，让 CI 看到是中断而非通过
+        sys.exit(1)
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _emergency_restore)
+    except (ValueError, OSError):
+        pass          # 非主线程注册不了就跳过，atexit 仍兜底
+atexit.register(_emergency_restore)
 
 
 def find_node():
@@ -99,6 +140,8 @@ def patch(fname, pairs):
         except OSError:
             pass
         raise
+    # 打补丁前先登记：此后若被 SIGTERM/SIGINT 打断，_emergency_restore 能照着备份还原
+    _ACTIVE[fname] = bak
     io.open(src, 'w', encoding='utf-8').write(s)
     return bak
 
@@ -107,18 +150,59 @@ def restore(fname, bak):
     """从备份还原源文件。还原本身失败要抛错（那是必须处理的）；
     备份文件删不掉只告警 —— 还原已成功，别让删除失败掩盖结果。"""
     shutil.copyfile(bak, os.path.join(REPO, fname))
+    _ACTIVE.pop(fname, None)      # 已还原，不再需要中断兜底
     try:
         os.remove(bak)
     except OSError:
         print('⚠️ 备份文件 %s 删除失败（不影响还原结果）' % bak)
 
 
+def self_heal():
+    """启动前自愈：上次若被 SIGKILL 打断，坏补丁会残留在源码里（连 finally 都来不及跑）。
+
+    带坏代码继续跑或提交 = 把"故意植入的回归"当成正式代码，比测试失败更危险。
+    所以宁可先判红，也要把状态摆到明面上。
+
+    有备份 -> 用备份还原（备份里是打补丁前的原文，最准确）。
+    没备份却带着 BROKEN 标记 -> 不擅自 git 还原：那会连开发者本地未提交的合法改动
+    一起抹掉，是另一种破坏。只报清楚、让人介入。
+    """
+    healed = []
+    for f in os.listdir(REPO):
+        if f.startswith('.rb_') and f.endswith('.bak'):
+            orig = f[4:-4]
+            bak = os.path.join(REPO, f)
+            src = os.path.join(REPO, orig)
+            if os.path.exists(src):
+                shutil.copyfile(bak, src)
+                healed.append(orig)
+            try:
+                os.remove(bak)
+            except OSError:
+                pass
+    if healed:
+        print('⚠️ 自愈：上次运行被中断，已从备份还原 %s（请先 git diff 确认后再提交）'
+              % '、'.join(healed))
+    stuck = []
+    for fname in TARGETS:
+        p = os.path.join(REPO, fname)
+        if os.path.exists(p) and BROKEN_MARK in io.open(p, encoding='utf-8').read():
+            stuck.append(fname)
+    if stuck:
+        print('❌ %s 仍残留上次中断的坏补丁且无备份可还原，拒绝继续（避免坏代码被误提交）。'
+              % '、'.join(stuck))
+        print('   请人工确认后执行：git checkout -- %s' % ' '.join(stuck))
+        return False
+    return True
+
+
 def main():
+    if not self_heal():
+        return 1
     results = []
 
     # 启动时内容快照：终检以此为准（不能依赖 git status —— 开发者本地常带着
     # 未提交的合法改动在跑本脚本，git 状态永远是 M，会误报"还原不干净"）
-    TARGETS = ['app.js', 'sub_app.js']
     snap = {}
     for fname in TARGETS:
         with io.open(os.path.join(REPO, fname), encoding='utf-8') as f:

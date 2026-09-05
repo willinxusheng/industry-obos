@@ -12,7 +12,10 @@
  [F1] 类比池扩到跨行业(3.4万段 vs 原 1.2千段), 多尺度(10/20/40)形状匹配, 核加权分位
  [F2] 近邻强制时间去重: 原 K=8 近邻常是同一段行情的连续重叠窗口 -> 区间假窄(实测覆盖率仅31.8%)
  [F3] 区间自动校准: 用回测残差比的中位数反解半宽系数, 使 P25-P75 实测覆盖率贴近理论 50%
- [F4] 概率化输出 p_up(升温概率), 回测 AUC≈0.69
+ [F4] 概率化输出 p_up(升温概率), 回测 AUC≈0.71
+      [2026-09-05] 口径修正: 原先 p_up 的评估样本被嵌在"方向准确率"的 |变动|>=1.0 过滤里,
+      等于剔掉了全部小变动样本(38/961=3.9%), 报出的 AUC 0.717 是"过滤掉难样本"条件下的
+      选择性偏差。已移出该过滤, 全样本口径 AUC=0.713(n=961)。本文件顶部的旧数字 0.69 亦已更正。
  [B1] 回测改无重叠采样(step=HORIZON), 样本近似独立
  [B2] 显著性改块级检验: 31 行业同期高度相关, 视为 1 个时间块, 消除 p 值夸大
  [B3] 新增"持平"基线(有界均值回复序列的最强点预测基线)
@@ -967,6 +970,15 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
                 raw[mname].append((med, q25, q75, real))
                 rmeta[mname].append((bi, s_t))
                 bloss[mname][bi][k] = (ae, se)
+                # [2026-09-05] p_up 的样本收集原先嵌在下面 |变动|>=1.0 的过滤里, 已移出。
+                #   那个过滤是为"方向准确率"服务的: 只在变动足够大时才判方向, 免得被噪声淹没。
+                #   但 p_up 的语义是 P(real[-1] > s_t), 标签与变动幅度无关 —— 按幅度过滤不是
+                #   随机抽样, 会把小变动整体剔除, 让标签分布向大涨/大跌两端倾斜。
+                #   实测被剔除样本占 3.9%(992 个中的 39 个), 其中涨跌 19:20 基本对称,
+                #   对当前 AUC 影响很小; 但口径应当正确 —— 一旦 p_up 将来用于概率校准
+                #   (Brier/保序映射), 这种条件过滤会引入真实的分布偏差。
+                if mname == "knn" and p_up is not None:
+                    pu.append((p_up, 1 if real[-1] > s_t else 0))
                 if abs(real[-1] - s_t) >= 1.0:
                     blk[mname][1] += 1
                     st["dn"] += 1
@@ -974,8 +986,6 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
                         st["nz"] += 1
                     if np.sign(med[-1] - s_t) == np.sign(real[-1] - s_t):
                         blk[mname][0] += 1
-                    if mname == "knn" and p_up is not None:
-                        pu.append((p_up, 1 if real[-1] > s_t else 0))
         for mname in methods:
             ok, nn = blk[mname]
             dirs[mname].append(ok / nn if nn else None)
