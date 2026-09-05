@@ -82,9 +82,26 @@ def rankdata(a):
 
 
 def spearman(a, b):
+    """秩相关. [2026-09-05] 先剔非有限值再排队。
+
+    原实现直接对原始序列排序：NaN 与任何值比较都为 False，rankdata 的"并列判定"
+    会因此失效并算出一串错秩，最终返回一个 NaN 相关系数。而调用方 ic_on_range 的
+    守卫写的是 `if v is not None` —— **NaN 不是 None**，拦不住，于是 NaN 会一路
+    污染 mean_ic -> weights_from_ic -> 合成分数；分数里的 NaN 直到 build_html 的
+    "NaN not in data_js" 断言才炸，那时已经跑了十分钟。故在源头就拒绝并回退 None。
+    调用方已保证等长且已滤 None，正常路径不受影响。
+    """
     n = len(a)
-    if n < 5:
+    if n < 5 or len(b) != n:
         return None
+    pairs = [(x, y) for x, y in zip(a, b)
+             if x is not None and y is not None
+             and math.isfinite(x) and math.isfinite(y)]
+    if len(pairs) < 5:
+        return None
+    a = [p[0] for p in pairs]
+    b = [p[1] for p in pairs]
+    n = len(a)
     ra, rb = rankdata(a), rankdata(b)
     ma_ = sum(ra) / n
     mb = sum(rb) / n
@@ -577,8 +594,9 @@ class AnalogLib:
                 q25 = med - (med - q25) * ca
                 q75 = med + (q75 - med) * ca
         if clip:
-            q25 = np.clip(np.minimum(q25, q75), 0, 100)
-            q75 = np.clip(np.maximum(q25, q75), 0, 100)
+            # [2026-09-05] 同 _fc_raw: 改为整体求值后绑定, 不再依赖上一行改写的 q25
+            q25, q75 = (np.clip(np.minimum(q25, q75), 0, 100),
+                        np.clip(np.maximum(q25, q75), 0, 100))
             med = np.clip(med, 0, 100)
         return {"median": med,
                 "p25": q25, "p75": q75,
@@ -649,6 +667,12 @@ class AnalogLib:
                     -0.5 * ((rg[0] - rc[0]) / REG_VOL_SCALE) ** 2
                     - 0.5 * ((rg[1] - rc[1]) / REG_TREND_SCALE) ** 2)
             W = W * ws
+            # [2026-09-05] 体制极度不匹配时 exp(-0.5*(Δ/scale)^2) 会下溢到 0, 使 W 整体为 0。
+            #   下游 p_up = (up*W).sum()/W.sum()、_wq() 里的 ww.sum() 都是同一个分母,
+            #   归零即 0/0 = NaN —— 分位数与概率全变 NaN 且不报错, 一直传到前端数据里。
+            #   当前输入量级(局部波动率差要上百才可能)实际不会触发, 但代价是静默崩坏,
+            #   故把下界补回来, 与上面第一次 clamp 同一口径。
+            W = np.maximum(W, 1e-6)
         fa = self.fut[sel]
         fd = S[k0, t] + (self.fut[sel] - self.anch[sel][:, None])
         P = fa if mode == "abs" else (fd if mode == "delta" else 0.5 * fa + 0.5 * fd)
@@ -666,8 +690,13 @@ class AnalogLib:
         consensus = float(ratio / (1.0 + ratio))
         if clip:
             med = np.clip(med, 0, 100)
-            q25 = np.clip(np.minimum(q25, q75), 0, 100)
-            q75 = np.clip(np.maximum(q25, q75), 0, 100)
+            # [2026-09-05] 下面两行原为顺序赋值: 第一行改完 q25, 第二行读到的已是新 q25。
+            #   正常路径下 _wq 对同一组 (P,W) 按 q 单调递增, 必有 q25<=q75, 结果碰巧正确;
+            #   但一旦某步出现 q25>q75(权重异常/校准系数为负), 不会交换而是双双压到小的那个,
+            #   区间悄悄退化成一个点 —— 与代码意图("保证 lo<=hi")不符且更难察觉。
+            #   改成右侧整体求值后再绑定, 语义就是真正的 min/max, 与执行顺序解耦。
+            q25, q75 = (np.clip(np.minimum(q25, q75), 0, 100),
+                        np.clip(np.maximum(q25, q75), 0, 100))
         return {"median": med, "p25": q25, "p75": q75,
                 "p_up": p_up, "n_used": int(len(sel)), "pool": pool,
                 "consensus": consensus}
@@ -737,8 +766,13 @@ def base_combo(S, lib, k, t, H=HORIZON):
     预测组合理论指向: 平均能在不牺牲信息的前提下降方差.
     固定 0.5 是稳妥先验, 但类比池的"共识度"是时变的: 历史上能找到清晰同类(近邻远小于全池)
     -> 该信类比; 当前状态史无前例(近邻都很远) -> 应更多收敛到稳健的持平基线.
-    [C2] 故权重自适应 w = 0.3 + 0.4*consensus01, 区间 [0.3,0.7]; consensus 来自 _fc_raw,
-    是查询时点的即时统计量(相对全候选池的距离比), 非样本内调参, 无前视.
+    [C2] 故权重自适应 w = 0.3 + 0.4*consensus01; consensus 来自 _fc_raw,
+    是查询时点的即时统计量(相对全候选池的距离比), 非样本内调参, 无前视。
+    [2026-09-05] 口径校正: 此前注释写"区间 [0.3,0.7]", 但 _fc_raw 里
+      ratio = clamp(Dpool_med/Dsel_med, 0, 4), consensus = ratio/(1+ratio),
+    故 consensus 上限是 4/5 = 0.8 而非 1.0 —— w 的实际区间是 [0.3, 0.62], 到不了 0.7。
+    实现本身是安全的(更保守), 错的是注释; 写 0.7 会让人以为类比权重能占七成。
+    注释与实现不符时以实现为准, 这里据实更正, 留待日后若要放开再改 clamp 上界。
     关键性质: 收缩保号(w*(med-s_t) 不改变符号), 故方向准确率与纯类比池完全一致,
     只压缩点位的过度外推 —— 这正是"方向有效、点位弱"的对症下药.
     """
@@ -786,8 +820,10 @@ def base_combo_mkt(S, lib, k, t, H=HORIZON):
     q25 = beta * np.asarray(rm["p25"], dtype=float) + C + np.asarray(ri["p25"], dtype=float)
     q75 = beta * np.asarray(rm["p75"], dtype=float) + C + np.asarray(ri["p75"], dtype=float)
     med = np.clip(med, 0, 100)
-    q25 = np.clip(np.minimum(q25, q75), 0, 100)
-    q75 = np.clip(np.maximum(q25, q75), 0, 100)
+    # [2026-09-05] 同 _fc_raw: 改为整体求值后绑定。此处 beta 重构后顺序本就更可能颠倒
+    #   (特质残差可负、beta*fm+C 可超出量程), 依赖"上一行改写的 q25"风险更大。
+    q25, q75 = (np.clip(np.minimum(q25, q75), 0, 100),
+                np.clip(np.maximum(q25, q75), 0, 100))
     # 方向概率: 系统性方向与特质方向等权结合(β>0 时两者同向)
     p_up = 0.5 * (rm.get("p_up") or 0.5) + 0.5 * (ri.get("p_up") or 0.5)
     return (med, q25, q75, float(p_up))

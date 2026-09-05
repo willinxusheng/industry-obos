@@ -272,6 +272,16 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: python test_audit_logic.py
 
+      # [2026-09-05] 核心算法不变式（用合成数据，不读 data/）：
+      #   ① 无前视泄漏：篡改查询时点之后的数据，类比预测必须逐位不变；
+      #   ② 非有限值不入秩：spearman 遇 NaN 必须剔除，不能产出"看着正常的错数"
+      #      （旧实现的 NaN 会打乱并列判定，返回一个错误的秩相关，全程无异常）；
+      #   ③ 分位区间不退化：lo/hi 顺序不得依赖上一行的赋值结果。
+      #   这三条处在链路最上游，破了会污染每一个分数且毫无提示 —— 故每日验一次。
+      - name: Core invariants self-check (no-lookahead / finite / quantile order)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python test_pit_invariants.py
+
       # 前端门禁：在 DOM stub 下实跑 app.js，捕获运行时错误/NaN/字段缺失/区间顺序错
       - name: Frontend smoke test (test_render.js)
         if: steps.fresh.outputs.skip != 'true'

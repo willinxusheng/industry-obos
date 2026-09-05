@@ -44,6 +44,12 @@ AUDIT_STEPS = [
     ["audit_predictions.py"],
     ["test_audit_logic.py"],     # 统计口径的受控反演自检（不读真实数据）
 ]
+# [2026-09-05] 核心算法不变式：无前视泄漏 / 非有限值不入秩 / 分位区间不退化。
+#   用合成数据跑，不依赖 data/，放在哪儿都行；放在此处是为了让"本地一键刷新"
+#   与 CI 跑同一套自检，避免本地改了核心库却只有线上才发现。
+CORE_STEPS = [
+    ["test_pit_invariants.py"],
+]
 NODE_STEPS = [
     ["test_render.js"],
     ["test_render.js", "--sub"],
@@ -158,6 +164,9 @@ def main():
 
     # 必须在 compute 之后、且 data/ 仍是本次结果时执行（见 AUDIT_STEPS 注释）
     for args in AUDIT_STEPS:
+        run([sys.executable] + [os.path.join(BASE, args[0])] + args[1:], " ".join(args))
+
+    for args in CORE_STEPS:
         run([sys.executable] + [os.path.join(BASE, args[0])] + args[1:], " ".join(args))
 
     node = find_node()
