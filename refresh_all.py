@@ -4,6 +4,8 @@
 链路（与 daily.yml 的 update job 逐步对齐，顺序不可换）：
     取数:     fetch_benchmark.py -> fetch_data.py -> fetch_sub_data.py
     计算:     compute.py -> compute.py --sub        (内置 quality_gate, FAIL 自行中断)
+    复核:     audit_predictions.py -> test_audit_logic.py
+              （必须紧跟 compute：此刻 data/ 才是新鲜的，详见 AUDIT_STEPS 注释）
     前端门禁: test_render.js -> test_render.js --sub -> gate_edge_test.js
     组装:     build_html.py -> build_html.py --sub -> cp -> index.html
     产物自检
@@ -34,6 +36,14 @@ PY_STEPS = [
     ["compute.py"],
     ["compute.py", "--sub"],
 ]
+# [2026-09-05] 复核必须紧跟 compute.py：audit_predictions.py 拿 data/industry_obos.json
+#   的"后来实际分数"去对 prediction_log.jsonl 里"当时的预测快照"，而仓库里 data/*.json
+#   是历史快照、CI 从不回写 —— 只有此刻（刚 fetch+compute 完）data/ 才是新鲜的。
+#   顺序挪动或漏跑，复核就永远落在"日志比数据新"的分支里，出不了任何结论。
+AUDIT_STEPS = [
+    ["audit_predictions.py"],
+    ["test_audit_logic.py"],     # 统计口径的受控反演自检（不读真实数据）
+]
 NODE_STEPS = [
     ["test_render.js"],
     ["test_render.js", "--sub"],
@@ -59,15 +69,31 @@ def run(cmd, label):
 
 
 def find_node():
-    """优先用受管 node（跨平台探测），回退到 PATH。"""
-    managed_candidates = [
-        os.path.expanduser(r"~\.workbuddy\binaries\node\versions\22.22.2\node.exe"),  # Windows
-        os.path.expanduser("~/.workbuddy/binaries/node/versions/22.22.2/bin/node"),   # macOS/Linux
-    ]
-    for p in managed_candidates:
-        if os.path.exists(p):
-            return p
-    return shutil.which("node")
+    """优先用受管 node（跨平台探测），回退到 PATH。
+
+    [2026-09-05] 原实现硬编码版本号 22.22.2，而实际安装目录是 22.22.2-2（带构建后缀）——
+      两个候选路径在当前机器上都不存在，"优先受管 node" 这段逻辑从未真正生效过，
+      全靠 PATH 里恰好有 node 兜底。换个没有 PATH 注入的终端就会直接 SystemExit，
+      而受管 node 明明就在磁盘上：防御写了却从不触发，比不写更误导。
+      改为按目录探测并取版本号最高者，以后升级 node 无需再改代码。
+    """
+    import glob
+    import re
+    root = os.path.expanduser("~/.workbuddy/binaries/node/versions")
+    cands = (glob.glob(os.path.join(root, "*", "bin", "node")) +
+             glob.glob(os.path.join(root, "*", "node.exe")))
+    best, best_key = None, None
+    for p in cands:
+        if not os.path.isfile(p):
+            continue
+        # versions/<ver>/bin/node 或 versions/<ver>/node.exe -> 取 <ver>
+        ver = os.path.basename(os.path.dirname(os.path.dirname(p)))
+        key = [int(x) for x in re.findall(r"\d+", ver)]
+        if key and (best_key is None or key > best_key):
+            best, best_key = p, key
+    if best:
+        print("使用受管 node: %s" % best, flush=True)
+    return best or shutil.which("node")
 
 
 def verify_output():
@@ -107,7 +133,6 @@ def verify_output():
         print("OK: %-11s %6.2f MB（首屏标量）" % (name, n / 1048576.0), flush=True)
 
     # 时序文件必须与首屏同日：跨日混搭比整页失败更误导
-    import json
     import re
     with open(os.path.join(BASE, "data.js"), encoding="utf-8") as f:
         m = re.search(r'"asof"\s*:\s*"([0-9-]+)"', f.read())
@@ -129,6 +154,10 @@ def verify_output():
 
 def main():
     for args in PY_STEPS:
+        run([sys.executable] + [os.path.join(BASE, args[0])] + args[1:], " ".join(args))
+
+    # 必须在 compute 之后、且 data/ 仍是本次结果时执行（见 AUDIT_STEPS 注释）
+    for args in AUDIT_STEPS:
         run([sys.executable] + [os.path.join(BASE, args[0])] + args[1:], " ".join(args))
 
     node = find_node()

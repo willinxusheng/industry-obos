@@ -36,8 +36,22 @@ def append_prediction_log(asof, industries):
     if os.path.exists(PRED_LOG):
         with open(PRED_LOG, encoding="utf-8") as f:
             for line in f:
-                if line.startswith('{"asof":"%s"' % asof):
-                    return  # 当日已记录, 幂等
+                # [2026-09-05] 原实现按行首前缀 '{"asof":"..."}' 匹配, 与 json.dumps 的
+                #   键顺序强耦合: 哪天给本行加个字段且排在 asof 前面, 幂等就静默失效,
+                #   而 CI 一天最多跑 48 次 —— 同一天会被重复追加, 日志膨胀、复核时
+                #   Brier/命中率被重复样本带偏, 且这种污染事后极难察觉。
+                #   改为"裸日期子串预筛 + 解析确认": 预筛只认日期本身, 不含键名/引号/
+                #   分隔符, 键顺序、separators 怎么变都不影响; 命中后再解析整行,
+                #   确认是 asof 字段本身等于当日(而非某处恰好出现同形字符串)。
+                #   ⚠️ 别把子串写成 '"asof":"%s"' —— 那又把生死交给序列化格式了
+                #      (json.dumps 默认带空格 ": ", 与写入时的紧凑 separators 不同)。
+                if asof not in line:
+                    continue
+                try:
+                    if json.loads(line).get("asof") == asof:
+                        return  # 当日已记录, 幂等
+                except ValueError:
+                    continue
     lines = []
     for ind in industries:
         fc = ind.get("forecast") or {}

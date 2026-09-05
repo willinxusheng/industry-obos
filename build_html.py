@@ -183,6 +183,22 @@ def main(sub_mode=False):
     # 原来 1MB 图表库与数 MB 数据串行下载, 全部到齐才开始渲染, 期间整页白屏无提示,
     # 国内访问 Pages 时表现为"看板加载不出来数据"。现由 app 内 ensureEcharts() 动态注入,
     # 表格/摘要等纯 DOM 内容先出, 图表库后台拉取, 到位后补图; 图表库失败也不影响数据。
+    # [2026-09-05] 锚点断言: 三个占位符必须"存在且各恰好一处", 先确认再替换。
+    #   少了这一步, 若模板哪天丢了/拼错某个占位符, str.replace 会静默无操作,
+    #   而下面那句"替换后不应再出现占位符"的断言照样通过 —— 模板改坏却报绿,
+    #   产物缺掉数据或整段 app 还浑然不觉。"补丁没打上却判通过"是本站一贯要堵的假绿。
+    for _ph in ("__ECHARTS__", "__DATA__", "__APPJS__"):
+        assert html.count(_ph) == 1, \
+            "模板 %s 中占位符 %s 出现 %d 次(期望恰好 1 次)" % (tpl_file, _ph, html.count(_ph))
+
+    # [2026-09-05] app 源码同样要转义 </script>, 与数据块同一条注入面。
+    #   原实现只给 data_js 做了转义(data 里可能含该字面量的行业名/文案), 却把 app_src
+    #   直接拼进 <script> 标签 —— 一旦源码里出现该字面量(构造 DOM 的模板字符串、
+    #   正则、注释都可能有), 标签会被提前闭合, 后半段 JS 变成页面上的普通文本,
+    #   看板直接白屏且不报任何错。<\/script> 在 JS 字符串与正则里与 </script> 等价,
+    #   对正常代码零影响(当前两个 app 均为 0 处, 纯防御)。
+    app_src = app_src.replace("</script>", "<\\/script>")
+
     html = html.replace("__ECHARTS__", "<!-- echarts 由 app 按需注入, 不阻塞首屏 -->")
     html = html.replace("__DATA__", '<script src="' + data_js_name + '"></script>')
     html = html.replace("__APPJS__", "<script>\n" + app_src + "\n</script>")

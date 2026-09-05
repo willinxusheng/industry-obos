@@ -248,6 +248,30 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: python compute.py --sub
 
+      # [2026-09-05] 复核已成熟的预测快照(方向命中 / p_up Brier / 区间覆盖)。
+      # ⚠️ 位置是刚性的, 必须紧跟 compute.py 之后:
+      #   它拿 data/industry_obos.json 的"后来实际分数"去对 prediction_log.jsonl 里
+      #   "当时的预测快照"。而本 workflow 的提交清单从不包含 data/industry_obos.json
+      #   (仓库里那份是永久陈旧的历史快照), 只有此刻 data/ 才是本次刚算出来的最新结果。
+      #   此前本脚本从未被 CI 调用过 —— 任何机器上单独跑都会撞上"日志新、数据旧",
+      #   永远出不了结论, 而日志却每天照常累积, 等首批样本成熟才发现无人复核。
+      # 退出码: 0 = 正常(含"尚无成熟样本"这种预期内的早期状态, 首批成熟约在 2026-10 中);
+      #         1 = 数据契约破损(文件缺失/坏 JSON/分数序列与日历长度不一致) —— 必须真红,
+      #             因为那意味着复核会按错位下标算出一整份"看起来正常"的错误报告。
+      # 故此处不加 continue-on-error: 契约问题要能触发告警, 早期"没样本"不该让 CI 变红。
+      - name: Audit matured predictions (needs fresh data/ — must follow compute)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python audit_predictions.py
+
+      # 审计口径的受控反演测试: 自造"答案已知"的合成数据跑一遍复核统计,
+      # 断言输出等于已知答案。 audit_predictions.py 的失效方式是"算完、格式正常、
+      # 数字是错的"(与 backtest_deep 那处 pooled/截面 IC 差 27 倍同型), 不报错,
+      # 而它要到 2026-10 中才有首批成熟样本 —— 那时再发现口径错, 攒的日志全白记。
+      # 零第三方依赖、不读真实 data/、不联网, 放在此处每个交易日都会被执行一次。
+      - name: Audit logic self-check (controlled inversion)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python test_audit_logic.py
+
       # 前端门禁：在 DOM stub 下实跑 app.js，捕获运行时错误/NaN/字段缺失/区间顺序错
       - name: Frontend smoke test (test_render.js)
         if: steps.fresh.outputs.skip != 'true'
