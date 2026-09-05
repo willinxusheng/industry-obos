@@ -33,14 +33,23 @@ def get_json(url, tries=5):
     raise last
 
 
-def parse_tencent():
-    url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-           "?param=sh000300,day,,,1300,day")
+def _tencent_rows(host, path):
+    """腾讯 K线公共解析(沪深300 = sh000300)。host/path 不同即不同接入点。"""
+    url = "https://%s/%s?param=sh000300,day,,,1300,day" % (host, path)
     d = get_json(url)
     node = (d.get("data", {}) or {}).get("sh000300") or {}
     key = "qfqday" if "qfqday" in node else "day"
     return [[r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
             for r in (node.get(key) or [])], key
+
+
+def parse_tencent():
+    return _tencent_rows("proxy.finance.qq.com", "ifzqgtimg/appstock/app/newfqkline/get")
+
+
+def parse_tencent_bak():
+    """腾讯备用接入点 ifzq.gtimg.cn；与主源逐日完全一致(实测最大绝对差 0.0)。"""
+    return _tencent_rows("ifzq.gtimg.cn", "appstock/app/newfqkline/get")
 
 
 def parse_eastmoney():
@@ -60,6 +69,9 @@ def parse_eastmoney():
 
 
 def parse_sina():
+    # 与行业链路不同: 这里取的是沪深300【指数代码 sh000300】, 新浪实测仍有效
+    # (1300 行, 与腾讯最大绝对差 0.005 —— 四舍五入精度差, 非口径差异), 故保留。
+    # 行业的申万代码(sw801780)新浪不支持, 那边已移除 —— 两者的可用性不可互相推断。
     url = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            "CN_MarketData.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=1300")
     d = get_json(url)
@@ -72,6 +84,7 @@ def parse_sina():
 
 SOURCES = [
     ("tencent", parse_tencent),
+    ("tencent_bak", parse_tencent_bak),
     ("eastmoney", parse_eastmoney),
     ("sina", parse_sina),
 ]

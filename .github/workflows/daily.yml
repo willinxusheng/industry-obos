@@ -82,6 +82,15 @@ jobs:
           REQUIRE_PYYAML: '1'
         run: python3 test_freshness_gate.py
 
+      # 取数据源健康自检（放在 Freshness gate 之前：否则周末/数据已最新时会跟着一起 skip）
+      # 回退源在主源正常时永不执行，是最容易腐烂的路径，且腐烂方式是静默的 ——
+      # 实测新浪对申万行业代码返回 HTTP 200 + JSON null（不报错、看板照常"取数成功"），
+      # 若不主动探测，等主源真出事那天才发现冗余早没了。每源只发 1 次请求，成本可忽略。
+      # 非阻断：第三方源偶发抖动不该让 CI 变红，但要留下每日痕迹供事后翻日志。
+      - name: Check data source health (non-blocking)
+        continue-on-error: true
+        run: python check_sources.py
+
       # ── 新鲜度门卫（始终运行）──────────────────────────────────────────────
       # 设计：基于「数据最新交易日 asof」判断，而非"今天是否跑过"戳。
       #   - 周末跳过；盘前(北京<16:00)跳过，避免把不完整盘中K线当收盘数据发布；

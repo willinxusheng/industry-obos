@@ -156,10 +156,9 @@ def get_json(url, tries=5):
     raise last
 
 
-def parse_tencent(code):
-    """腾讯 newfqkline；不复权(day 键)；如实回传复权键，逻辑同 fetch_data.parse_tencent。"""
-    url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-           "?param=pt01%s,day,,,1300,day") % code
+def _tencent_rows(code, host, path):
+    """腾讯 K线公共解析. host/path 不同即不同接入点, 数据口径完全一致(详见 fetch_data 同名函数)."""
+    url = "https://%s/%s?param=pt01%s,day,,,1300,day" % (host, path, code)
     d = get_json(url)
     node = (d.get("data", {}) or {}).get("pt01" + code) or {}
     key = "qfqday" if "qfqday" in node else "day"
@@ -167,6 +166,17 @@ def parse_tencent(code):
     for r in (node.get(key) or []):
         rows.append([r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])])
     return rows, key
+
+
+def parse_tencent(code):
+    """腾讯 newfqkline；不复权(day 键)；如实回传复权键，逻辑同 fetch_data.parse_tencent。"""
+    return _tencent_rows(code, "proxy.finance.qq.com",
+                         "ifzqgtimg/appstock/app/newfqkline/get")
+
+
+def parse_tencent_bak(code):
+    """腾讯备用接入点 ifzq.gtimg.cn；与主源逐日完全一致(实测最大绝对差 0.0)。"""
+    return _tencent_rows(code, "ifzq.gtimg.cn", "appstock/app/newfqkline/get")
 
 
 def parse_eastmoney(code):
@@ -187,7 +197,11 @@ def parse_eastmoney(code):
 
 
 def parse_sina(code):
-    """新浪 getKLineData；symbol=sw{sw}；scale=240 日线；不复权。"""
+    """新浪 getKLineData；symbol=sw{sw}；scale=240 日线；不复权。
+
+    [2026-09-05 实测] 不支持申万行业代码(8 种 symbol 格式全部 HTTP 200 + null)，
+    已从行业链路移除。基准链路的 sh000300 指数代码仍然有效，那边保留 —— 别一起删。
+    """
     url = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            "CN_MarketData.getKLineData?symbol=sw%s&scale=240&ma=no&datalen=1300") % code
     d = get_json(url)
@@ -198,11 +212,12 @@ def parse_sina(code):
     return rows, "day"
 
 
-# 优先级：腾讯(主) → 东财 → 新浪（与一级一致）
+# 优先级：腾讯(主) → 腾讯备用接入点(同口径镜像) → 东财(第三方回退)
+# 与 fetch_data.py 保持一致。新浪已移除(不支持申万行业代码)。
 SOURCES = [
     ("tencent", parse_tencent),
+    ("tencent_bak", parse_tencent_bak),
     ("eastmoney", parse_eastmoney),
-    ("sina", parse_sina),
 ]
 
 

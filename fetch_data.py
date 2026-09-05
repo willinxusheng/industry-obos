@@ -58,15 +58,9 @@ def get_json(url, tries=5):
     raise last
 
 
-def parse_tencent(code):
-    """腾讯 newfqkline；返回 ([date,open,close,high,low,vol], 实际复权键)；不复权(day 键)。
-
-    注意: 必须如实回传腾讯返回的复权键(qfqday 或 day), 由 main 据实标注 fq_key。
-    若某日腾讯改为返回前复权(qfqday), fq_key 会被标为 "qfq", 触发 compute.quality_gate
-    的 [A5] 复权断言 FAIL —— 绝不让"前复权数据被静默标成 day"绕过 PIT 历史可复现纪律。
-    """
-    url = ("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
-           "?param=pt01%s,day,,,1300,day") % code
+def _tencent_rows(code, host, path):
+    """腾讯 K线公共解析. host/path 不同即为不同接入点, 数据口径完全一致."""
+    url = "https://%s/%s?param=pt01%s,day,,,1300,day" % (host, path, code)
     d = get_json(url)
     node = (d.get("data", {}) or {}).get("pt01" + code) or {}
     key = "qfqday" if "qfqday" in node else "day"
@@ -74,6 +68,27 @@ def parse_tencent(code):
     for r in (node.get(key) or []):
         rows.append([r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])])
     return rows, key
+
+
+def parse_tencent(code):
+    """腾讯 newfqkline；返回 ([date,open,close,high,low,vol], 实际复权键)；不复权(day 键)。
+
+    注意: 必须如实回传腾讯返回的复权键(qfqday 或 day), 由 main 据实标注 fq_key。
+    若某日腾讯改为返回前复权(qfqday), fq_key 会被标为 "qfq", 触发 compute.quality_gate
+    的 [A5] 复权断言 FAIL —— 绝不让"前复权数据被静默标成 day"绕过 PIT 历史可复现纪律。
+    """
+    return _tencent_rows(code, "proxy.finance.qq.com",
+                         "ifzqgtimg/appstock/app/newfqkline/get")
+
+
+def parse_tencent_bak(code):
+    """腾讯备用接入点 ifzq.gtimg.cn.
+
+    [2026-09-05 实测] 与主源 1300 个交易日逐日收盘价完全一致(最大绝对差 0.0),
+    口径天然同源, 不会像第三方源那样引入跨源偏估。价值在于: 主源域名被限流/故障/劫持时
+    可无缝顶上, 是真正可用的冗余。
+    """
+    return _tencent_rows(code, "ifzq.gtimg.cn", "appstock/app/newfqkline/get")
 
 
 def parse_eastmoney(code):
@@ -94,7 +109,13 @@ def parse_eastmoney(code):
 
 
 def parse_sina(code):
-    """新浪 getKLineData；symbol=sw{sw}；scale=240 日线；不复权；字段 day/open/high/low/close/volume。"""
+    """新浪 getKLineData；symbol=sw{sw}；scale=240 日线；不复权；字段 day/open/high/low/close/volume。
+
+    [2026-09-05 实测] 该接口【不支持申万行业代码】：对 sw801780 返回 HTTP 200 + JSON null，
+    试过 sw/sh/sz/b_/hb 等 8 种 symbol 格式全部为 null；而对个股 sh600000、指数 sh000300
+    均正常返回。这是接口能力问题(不是网络或我们写错), 与运行环境无关、全球一致。
+    故行业链路已不再使用它；但基准链路(沪深300 = sh000300)仍有效，那边保留。
+    """
     url = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            "CN_MarketData.getKLineData?symbol=sw%s&scale=240&ma=no&datalen=1300") % code
     d = get_json(url)
@@ -106,11 +127,14 @@ def parse_sina(code):
     return rows, "day"
 
 
-# 优先级：腾讯(主) → 东财 → 新浪（海外可达回退）
+# 优先级：腾讯(主) → 腾讯备用接入点(同口径镜像) → 东财(第三方, 海外可达回退)
+# [2026-09-05] 新浪已从行业链路移除(不支持申万行业代码, 见 parse_sina 注释)。
+# 注意别连基准链路的新浪也一起删 —— 那边取的是 sh000300 指数代码, 实测仍有效。
+# 冗余是否真实可用, 请用 `python check_sources.py` 定期自检, 别只靠这里的假设。
 SOURCES = [
     ("tencent", parse_tencent),
+    ("tencent_bak", parse_tencent_bak),
     ("eastmoney", parse_eastmoney),
-    ("sina", parse_sina),
 ]
 
 
