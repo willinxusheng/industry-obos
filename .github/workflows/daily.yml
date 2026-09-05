@@ -117,11 +117,19 @@ jobs:
           echo "asof_before=$ASOF"
           echo "asof_before=$ASOF" >> "$GITHUB_OUTPUT"
           if [ "$DOW" = "6" ] || [ "$DOW" = "7" ]; then
-            echo "周末休市 -> skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            # [2026-09-05] 不再无条件 exit —— 那会让"push 命中前端源码 -> 强制重建"短路：
+            #   周末改模板/JS 时产物永远上不了线(要等下个交易日 16:00 后才重建)。
+            #   周末只是"没有新数据"，用已有完整收盘数据重建产物是安全的(见下方 SRC_HIT)。
+            #   周末期望的最新完整交易日恒为周五；无源码改动的定时 run 仍会正常 skip。
+            echo "周末休市(期望=周五收盘, 源码改动仍强制重建)"
+            IS_WEEKEND=1
+          else
+            IS_WEEKEND=0
           fi
           # 盘中及收盘结算期(09:30-16:00)一律跳过：绝不发布不完整盘中K线当收盘数据。
           # 16:00 而非 15:00，是给数据源留 1 小时落定当日日线。
-          if [ "$tmin" -ge 570 ] && [ "$tmin" -lt 960 ]; then
+          # 仅工作日生效：周末无盘中 K 线风险，源码重建(用已有收盘数据)不应被此拦下。
+          if [ "$IS_WEEKEND" = "0" ] && [ "$tmin" -ge 570 ] && [ "$tmin" -lt 960 ]; then
             echo "盘中/结算期($HM)，不发布不完整数据 -> skip"
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -136,7 +144,10 @@ jobs:
           #   凌晨 00:00-09:30 -> 上一个工作日（此时今日尚未开盘，最新完整数据是昨天）
           # 凌晨窗口的意义：若前一交易日傍晚的更新窗口因 GitHub 定时漂移而没命中，
           #   凌晨这次会把上一个交易日的数据补上 —— 保证数据永不超过 1 天滞后。
-          if [ "$tmin" -ge 960 ]; then
+          if [ "$IS_WEEKEND" = "1" ]; then
+            # 周六-1=周五, 周日-2=周五
+            EXPECTED=$(date -u -d "+8 hours -$((DOW - 5)) days" +%Y-%m-%d)
+          elif [ "$tmin" -ge 960 ]; then
             EXPECTED="$TODAY"
           elif [ "$DOW" = "1" ]; then
             EXPECTED=$(date -u -d "+8 hours -3 days" +%Y-%m-%d)   # 周一凌晨 -> 上周五
