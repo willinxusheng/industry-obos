@@ -575,6 +575,11 @@ def main(sub_mode=False):
     # 阶段6: PIT 阈值 / 状态 / 推演 / 量能
     t_last = n_t - 1
     industries = []
+    # [2026-09-09] 与 industries 同序保存**未舍入**的 (cur_score, ob_line, os_line)。
+    #   输出的 cur_score/阈值线都是 r1 (round 1 位), 而 state 是按全精度判的;
+    #   若显著超买/超卖标签也拿舍入值去比, 就会出现"state=偏热 却标 显著超买"的自相矛盾
+    #   (cur 与 ob 真值相差 <0.05 时, 舍入后可能相等甚至反向)。故此处留一份真值。
+    raw_lines = []
     for k, b in enumerate(base):
         score = b["score"]
         ob_s = expanding_quantile(score, OB_Q)
@@ -685,6 +690,7 @@ def main(sub_mode=False):
             "ret20": ret(b["close"], 20), "ret60": ret(b["close"], 60), "ret250": ret(b["close"], 250),
             "vol_ratio": vr, "vol_state": vst, "valuation": None,
         })
+        raw_lines.append((cs, ob_line, os_line))
 
     # FDR (BH) — 标准算法: 排序后从后往前累积 min。
     # 原实现从前往后累积 max，方向反了，导致 q 恒等于 1.0、显著标签永不触发。
@@ -699,10 +705,12 @@ def main(sub_mode=False):
     for i, ind in enumerate(industries):
         ind["fdr_q"] = round(q[i], 3)
         sig = "-"
-        if ind["cur_score"] is not None and q[i] < 0.05:
-            if ind["extreme_dir"] == "ob" and ind["cur_score"] >= ind["ob_line"]:
+        # 用 raw_lines 的全精度值判定: 与 state 同源, 避免"舍入后越线、真值未越线"的矛盾标签
+        cs_r, ob_r, os_r = raw_lines[i]
+        if cs_r is not None and q[i] < 0.05:
+            if ind["extreme_dir"] == "ob" and cs_r >= ob_r:
                 sig = "显著超买"
-            elif ind["extreme_dir"] == "os" and ind["cur_score"] <= ind["os_line"]:
+            elif ind["extreme_dir"] == "os" and cs_r <= os_r:
                 sig = "显著超卖"
         ind["sig"] = sig
 

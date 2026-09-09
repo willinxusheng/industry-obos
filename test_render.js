@@ -57,15 +57,27 @@ for (const x of data.industries) {
     if (f.future_dates.length !== f.median.length) bad.push(x.name + '.forecast.dates_len');
   }
   if (typeof f.p_up === 'number' && (f.p_up < 0 || f.p_up > 1)) bad.push(x.name + '.forecast.p_up_range');
-  // 状态判定必须与该行业自身 PIT 五档阈值自洽（不能出现"分数已越过超买线却标偏热"）
+  /* 状态判定必须与该行业自身 PIT 五档阈值自洽（不能出现"分数已越过超买线却标偏热"）
+   * [2026-09-09] 容差说明: state 由后端按**全精度**判定, 而 cur_score 与四条阈值线
+   *   都是 round(x,1) 后才写进 JSON(compute.py 的 r1)。两者真值可能相差至多 0.1
+   *   (各自舍入误差 0.05), 于是会出现"展示上 cur==hot 但真值 cur<hot"——
+   *   实测 2026-09-09 二级「教育」cur=60.8 / hot_line=60.8 / state=中性 即此情形。
+   *   拿舍入后的展示值做精确比较会把这种正常歧义判成不自洽(09-09 CI 连续 5 次失败即此)。
+   *   故按 ±TOL 各判一次, 三个期望取并集: 真值偏离超过 TOL 时三者一致, 依然判红。 */
   const hasL = ['ob_line', 'os_line', 'hot_line', 'cold_line'].every(k => typeof x[k] === 'number');
   if (!hasL) bad.push(x.name + '.pit_lines_missing');
   if (x.state && x.state !== '-' && hasL) {
-    const exp = x.cur_score >= x.ob_line ? '超买'
-      : x.cur_score <= x.os_line ? '超卖'
-        : x.cur_score >= x.hot_line ? '偏热'
-          : x.cur_score <= x.cold_line ? '偏冷' : '中性';
-    if (exp !== x.state) bad.push(x.name + '.state(' + x.state + '!=' + exp + ')');
+    const stOf = function (c) {
+      return c >= x.ob_line ? '超买'
+        : c <= x.os_line ? '超卖'
+          : c >= x.hot_line ? '偏热'
+            : c <= x.cold_line ? '偏冷' : '中性';
+    };
+    const TOL = 0.1;
+    const acc = [stOf(x.cur_score), stOf(x.cur_score - TOL), stOf(x.cur_score + TOL)];
+    if (acc.indexOf(x.state) < 0) {
+      bad.push(x.name + '.state(' + x.state + ' not in [' + acc.join('/') + '])');
+    }
   }
   // 阈值必须严格有序: os <= cold <= hot <= ob
   if (hasL && !(x.os_line <= x.cold_line && x.cold_line <= x.hot_line && x.hot_line <= x.ob_line)) {
