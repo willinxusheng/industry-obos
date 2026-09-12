@@ -280,6 +280,77 @@
     if (nEl) nEl.textContent = INDS.length;
   }
 
+  /* ---------- 市场环境条（2026-09-12 · 与主看板同款同源） ----------
+   * 二级行业波动更极端，"深冷"在不同市场环境里含义相反这一点更需要参照物，
+   * 故与主看板共用同一份 market 数据块（同一条 compute 管线产出）与同一段口径说明。
+   * 纯文本首屏直出，不依赖 echarts / series —— 见 gate_edge 坏6 的同款纪律。 */
+  var MK_NOTE = '口径：市场状态由<b>沪深300 自身 OBOS 分</b>按 PIT 扩张分位阈值分档'
+    + '（&lt;40 偏冷 / 40–60 中性 / &gt;60 偏热，只用当日及之前数据），与行业分同算法同参数。'
+    + '历史分层（<b>2023-05～2026-07</b> 固定窗口，样本以 2024 年为主，未来 20 日）：'
+    + '<b>市场偏热 × 行业深热</b>（行业分 ≥80）绝对 +1.50% / 超额 +1.19%，胜率 56.5%，n=1814；'
+    + '<b>市场偏热 × 行业深冷</b>（≤20）绝对 -3.17%，但超额仅 -0.20% —— 该值为'
+    + '<b>绝对收益口径</b>下的机会成本，不是本金下跌风险。固定窗口结论不构成未来保证。';
+
+  function mkSparkSVG(vals, color) {
+    var vs = [], i, v;
+    for (i = 0; i < vals.length; i++) { v = vals[i]; if (typeof v === 'number' && isFinite(v)) vs.push(v); }
+    if (vs.length < 2) return '';
+    var lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs);
+    if (!(hi > lo)) hi = lo + 1;
+    var W = 172, H = 34, pad = 3;
+    var n = vals.length <= 1 ? 1 : vals.length - 1;
+    var Y = function (x) { return H - pad - (H - 2 * pad) * ((x - lo) / (hi - lo)); };
+    var segs = [], cur = [];
+    for (i = 0; i < vals.length; i++) {
+      v = vals[i];
+      if (typeof v === 'number' && isFinite(v)) cur.push([pad + (W - 2 * pad) * (i / n), Y(v)]);
+      else if (cur.length) { segs.push(cur); cur = []; }
+    }
+    if (cur.length) segs.push(cur);
+    var d = segs.map(function (s) {
+      return s.map(function (p, j) {
+        return (j ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1);
+      }).join('');
+    }).join('');
+    var mid = Y(50).toFixed(1);
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">'
+      + '<line x1="0" y1="' + mid + '" x2="' + W + '" y2="' + mid + '" stroke="' + COLORS.idx
+      + '" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.5"/>'
+      + '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8"'
+      + ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  }
+
+  function renderMarket() {
+    var m = DATA.market;
+    var bar = document.getElementById('mkBar');
+    if (!bar) return;
+    if (!m || typeof m.cur_score !== 'number' || !isFinite(m.cur_score)) return;
+    var col = ST_COLOR[m.state] || '#98a2b3';
+    document.getElementById('mkName').textContent = m.name || '沪深300';
+    var sc = document.getElementById('mkScore');
+    sc.textContent = fmt(m.cur_score);
+    sc.style.color = col;
+    var chip = document.getElementById('mkChip');
+    chip.textContent = m.state || '-';
+    chip.style.background = col;
+    var L = [];
+    if (typeof m.ob_line === 'number') L.push('超买线 ' + fmt(m.ob_line));
+    if (typeof m.hot_line === 'number') L.push('偏热线 ' + fmt(m.hot_line));
+    if (typeof m.cold_line === 'number') L.push('偏冷线 ' + fmt(m.cold_line));
+    if (typeof m.os_line === 'number') L.push('超卖线 ' + fmt(m.os_line));
+    var rc = m.recent || [];
+    var rd = (m.recent_dates && m.recent_dates.length)
+      ? '（' + m.recent_dates[0] + ' ~ ' + m.recent_dates[m.recent_dates.length - 1] + '）' : '';
+    document.getElementById('mkLines').innerHTML =
+      (L.length ? 'PIT 动态阈值：' + L.join(' · ') + ' ｜ ' : '')
+      + '近 ' + rc.length + ' 个交易日走势' + rd
+      + (m.scope_note ? ' ｜ ' + m.scope_note : '');
+    document.getElementById('mkNote').innerHTML = MK_NOTE;
+    var sp = document.getElementById('mkSpark');
+    if (sp) sp.innerHTML = mkSparkSVG(rc, col);
+    bar.hidden = false;
+  }
+
   /* ---------- 状态档位 chips (带计数, 多选; 计数对象 = 一级行业) ---------- */
   function renderStateChips() {
     var base = PAR_ROWS;
@@ -762,6 +833,7 @@
 
   renderQuality();
   renderSummary();
+  renderMarket();
   renderStateChips();
   renderTable();
   renderBacktest();

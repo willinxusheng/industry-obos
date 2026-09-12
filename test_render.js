@@ -107,6 +107,32 @@ if (typeof w.pit_jump_max === 'number' && typeof w.pit_jump_max_raw === 'number'
 for (const k of ['pit_threshold', 'forecaster', 'cal_factor', 'analog_pool']) {
   if (!(k in (data.method || {}))) bad.push('method.' + k);
 }
+/* [2026-09-12] 市场环境条的数据契约：字段齐 + 阈值线不倒挂 + 迷你趋势与日期等长。
+ * 阈值线顺序是"前端画什么颜色"的依据，倒挂会让同一分数同时落在两个档；
+ * recent 与 recent_dates 错位则会把趋势图标到错误的日期段上（看着正常，实则错）。 */
+const mk = data.market;
+if (!mk) bad.push('market');
+else {
+  for (const k of ['name', 'code', 'cur_score', 'ob_line', 'os_line', 'hot_line', 'cold_line',
+    'state', 'regime', 'recent', 'recent_dates', 'method', 'scope', 'scope_note']) {
+    if (!(k in mk)) bad.push('market.' + k);
+  }
+  /* 市场分由本管线的 PIT 权重拟合，两条管线（一级 31 / 二级 109）同一交易日并不相等
+   * （实测 22.9 vs 20.1）。前端靠 scope 决定要不要披露这件事 —— 标错就会
+   * 让二级页要么冒充主看板口径、要么在主看板上多一段莫名其妙的免责。 */
+  if (mk.scope !== (SUB ? 'sub' : 'main')) bad.push('market.scope=' + mk.scope);
+  if (SUB && !String(mk.scope_note || '').includes('互相独立')) bad.push('market.scope_note 缺失(二级必填)');
+  if (!SUB && mk.scope_note) bad.push('market.scope_note 应为主看板留空');
+  if (!['超买', '偏热', '中性', '偏冷', '超卖'].includes(mk.state)) bad.push('market.state=' + mk.state);
+  if (!['cold', 'mid', 'hot'].includes(mk.regime)) bad.push('market.regime=' + mk.regime);
+  if (typeof mk.cur_score === 'number'
+    && !(mk.os_line <= mk.cold_line && mk.cold_line <= mk.hot_line && mk.hot_line <= mk.ob_line)) {
+    bad.push('market.lines_order=' + [mk.os_line, mk.cold_line, mk.hot_line, mk.ob_line].join('/'));
+  }
+  if (Array.isArray(mk.recent) && Array.isArray(mk.recent_dates) && mk.recent.length !== mk.recent_dates.length) {
+    bad.push('market.recent_len=' + mk.recent.length + '/' + mk.recent_dates.length);
+  }
+}
 // 回测: 每个方法字段齐 + 覆盖率校准到位
 for (const m of ['knn', 'persist', 'meanrev', 'momentum', 'randomwalk']) {
   const o = data.backtest[m];
@@ -197,6 +223,32 @@ try {
   }
   if (fn.includes('undefined')) { console.error('fcNote has undefined'); process.exit(1); }
   console.log('fcNote OK: PIT threshold + p_up + calibration disclosed');
+
+  /* [2026-09-12] 市场环境条必须真的渲染出来，且带口径注记。
+   * 它承载"行业状态要放在市场环境下读"这一判据（深回测：同一行业状态在不同市场环境下
+   * 含义相反）。渲染失败会静默退化成"只剩行业状态"，用户不会察觉少了什么 —— 故必须真断言，
+   * 不能只看 market 字段在不在 data 里（那只能证明后端给了，证明不了前端用了）。 */
+  const mkd = data.market;
+  if (!mkd || typeof mkd.cur_score !== 'number') { console.error('market.cur_score 缺失，无法校验渲染'); process.exit(1); }
+  const mn = String(elements.mkNote.innerHTML);
+  if (!mn.includes('口径')) { console.error('mkNote 缺口径说明'); process.exit(1); }
+  if (!mn.includes('n=1814')) { console.error('mkNote 缺分层样本量（口径不完整）'); process.exit(1); }
+  if (/undefined|NaN/.test(mn)) { console.error('mkNote has undefined/NaN'); process.exit(1); }
+  if (String(elements.mkScore.textContent) !== mkd.cur_score.toFixed(1)) {
+    console.error('mkScore mismatch:', elements.mkScore.textContent, 'vs', mkd.cur_score.toFixed(1)); process.exit(1);
+  }
+  if (String(elements.mkChip.textContent) !== String(mkd.state)) {
+    console.error('mkChip mismatch:', elements.mkChip.textContent, 'vs', mkd.state); process.exit(1);
+  }
+  if (elements.mkBar.hidden !== false) { console.error('mkBar 未显示（应 hidden=false）'); process.exit(1); }
+  if (!/<svg/.test(String(elements.mkSpark.innerHTML))) { console.error('mkSpark 未渲染内联 SVG 趋势'); process.exit(1); }
+  /* 口径差异必须在二级页上披露出来（两个管线的市场分不相等，用户来回切会同时看到两个数）。
+   * 主看板反过来不该出现这段——那是"替别人解释"，只会稀释它自己那行的信息量。 */
+  const mlines = String(elements.mkLines.innerHTML);
+  if (SUB && !mlines.includes('互相独立')) { console.error('二级 mkLines 缺口径差异披露'); process.exit(1); }
+  if (!SUB && mlines.includes('互相独立')) { console.error('主看板不该出现二级口径披露'); process.exit(1); }
+  if (/undefined|NaN/.test(mlines)) { console.error('mkLines has undefined/NaN'); process.exit(1); }
+  console.log('market bar OK: score=%s state=%s scope=%s spark=inline-svg', mkd.cur_score, mkd.state, mkd.scope);
   // 聚类模块已移除：确认 DOM 中不再存在 cluster 模块
   if (elements.cluster !== undefined && elements.cluster !== null) {
     console.error('cluster module should have been removed but still present');

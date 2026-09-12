@@ -264,6 +264,34 @@
             padding-left: max(8px, env(safe-area-inset-left));
             padding-right: max(8px, env(safe-area-inset-right)); }
   }
+
+  /* ---------- 市场环境条（2026-09-12 新增 · P 段公共，两看板同款） ----------
+   * 位置：hero 之下、摘要六格之上。行业状态必须放在市场环境下读 ——
+   * 深回测里"同一行业状态在不同市场环境下含义相反"，只看行业自身会漏掉这一维。 */
+  .mkbar { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 12px 16px 11px; margin-bottom: 14px; box-shadow: var(--shadow-sm);
+    animation: riseIn .55s var(--ease) both; }
+  .mkbar[hidden] { display: none; }
+  .mkbar .mk-top { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .mkbar .mk-k { font-size: 11.5px; color: var(--sub); letter-spacing: 1.2px; }
+  .mkbar .mk-name { font-size: 13px; font-weight: 700; color: var(--ink-2); letter-spacing: .4px; }
+  .mkbar .mk-score { font-size: 22px; font-weight: 800; line-height: 1; letter-spacing: .5px;
+    font-variant-numeric: tabular-nums; }
+  .mkbar .mk-unit { font-size: 11px; color: var(--sub); margin-left: 1px; }
+  .mkbar .mk-chip { font-size: 11.5px; font-weight: 700; color: #fff; letter-spacing: .6px;
+    padding: 3px 11px 4px; border-radius: 999px; }
+  .mkbar .mk-spark { flex: 0 0 172px; width: 172px; height: 34px; margin-left: auto; }
+  .mkbar .mk-spark svg { display: block; width: 100%; height: 100%; }
+  .mkbar .mk-lines { margin-top: 7px; font-size: 11.5px; color: var(--sub);
+    font-variant-numeric: tabular-nums; letter-spacing: .2px; }
+  .mkbar .mk-note { margin-top: 5px; font-size: 11.5px; line-height: 1.7; color: var(--sub); }
+  .mkbar .mk-note b { color: var(--ink-2); font-weight: 600; }
+  @media (max-width: 720px) {
+    .mkbar { padding: 11px 13px 10px; }
+    .mkbar .mk-score { font-size: 19px; }
+    .mkbar .mk-spark { flex: 1 1 100%; width: auto; margin-left: 0; }
+    .mkbar .mk-note { font-size: 11px; }
+  }
 </style>
 </head>
 <body>
@@ -299,6 +327,24 @@ setTimeout(function () {
       <a class="on" href="index.html">一级行业总览 <small>31 个</small></a>
       <a href="sub.html">二级行业细分 <small>109 个</small></a>
     </nav>
+  </div>
+
+  <!-- [2026-09-12] 市场环境条：行业状态要放在市场环境下读。
+      后端一直在算沪深300 自身的 OBOS 分（combo_mkt 的分解输入），但从未落盘，
+      前端能看到的只有"行业自身"状态，而深回测显示同一行业状态在不同市场环境下含义相反。
+       缺数据时保持 hidden（不显示 "-" 占位，避免误读为"市场状态未知"仍可参考）。
+       内容由 app.js 首屏直出，不依赖 echarts / series.js。 -->
+  <div class="mkbar" id="mkBar" hidden>
+    <div class="mk-top">
+      <span class="mk-k">市场环境</span>
+      <span class="mk-name" id="mkName">沪深300</span>
+      <span class="mk-score" id="mkScore">-</span>
+      <span class="mk-unit">/100</span>
+      <span class="mk-chip" id="mkChip">-</span>
+      <span class="mk-spark" id="mkSpark"></span>
+    </div>
+    <div class="mk-lines" id="mkLines"></div>
+    <div class="mk-note" id="mkNote"></div>
   </div>
 
   <!-- 模块排序：按重要性+关联度 → 决策簇(概览→排名→下钻) → 方法可信度 → 前置门禁 -->

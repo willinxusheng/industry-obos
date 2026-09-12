@@ -272,6 +272,19 @@ jobs:
         if: steps.fresh.outputs.skip != 'true'
         run: python test_audit_logic.py
 
+      # [2026-09-12] 模型指标漂移监控（读 data/model_metrics_log.jsonl，即上一步 compute 刚追加的行）。
+      #   compute.py 每交易日写一行"模型当时长什么样"(方向/AUC/Brier/覆盖/MAE/市场状态)，
+      #   本脚本是它的读取端 —— 只写不读的日志就是死数据，而"准确率是否在缓慢退化"
+      #   必须有人定期回答，否则要等看板明显不对劲才发现，那时已积累十几个交易日的无声漂移。
+      #   退出码：契约破损(坏 JSON/同 asof 重复/缺字段) = 1，必须真红（重复行会让"漂移"变成
+      #   日志自身重复的假象）；指标漂移只打印不判红（20 日窗口的波动本身含大量噪声，
+      #   拿它当门禁会天天误报，最终被无视——比没有更糟）。
+      #   脚本启动时会先用合成数据自检漂移统计（平稳不报/下坠必报/样本不足不报），
+      #   自检失败直接红 —— 防"统计写错了但每月照样打印一张表"这种最坏失效。
+      - name: Model metrics drift monitor (contract gate + drift notice)
+        if: steps.fresh.outputs.skip != 'true'
+        run: python metrics_drift.py
+
       # [2026-09-05] 核心算法不变式（用合成数据，不读 data/）：
       #   ① 无前视泄漏：篡改查询时点之后的数据，类比预测必须逐位不变；
       #   ② 非有限值不入秩：spearman 遇 NaN 必须剔除，不能产出"看着正常的错数"
@@ -360,7 +373,10 @@ jobs:
           # [2026-09-04] series.js 是主看板的同款懒加载时序(从 data.js 剥离), 同理必须提交。
           # [2026-09-04] data/prediction_log.jsonl: 预测快照审计日志(compute.py 每次追加),
           #   由 audit_predictions.py 复核"当时的预测 vs 后来的实际"。漏提交=审计断档。
-          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js data/prediction_log.jsonl
+          # [2026-09-12] data/model_metrics_log.jsonl: 模型指标漂移日志(compute.py 每次追加
+          #   一行汇总指标: 方向/AUC/Brier/覆盖/MAE/市场状态)。与 prediction_log 的分工是
+          #   "模型长什么样" vs "预测了什么"。漏提交 = 漂移序列断档, 且断档是静默的。
+          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js data/prediction_log.jsonl data/model_metrics_log.jsonl
           if git diff --cached --quiet; then
             echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
             echo "pushed=false" >> "$GITHUB_OUTPUT"

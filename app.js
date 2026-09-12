@@ -201,6 +201,85 @@
   }
 
 
+  /* ---------- 市场环境条（2026-09-12） ----------
+   * 为什么加：深回测显示"同一行业状态在不同市场环境下含义相反"——
+   *   市场偏热 × 行业深热：绝对 +1.50% / 超额 +1.19%（胜率 56.5%，n=1814）——
+   *                        唯一绝对与超额两端同时为正、且样本充足的组合；
+   *   市场偏热 × 行业深冷：绝对 -3.17%，但**超额仅 -0.20%**，即跑输大盘的机会成本，
+   *                        不是本金下跌风险（首轮报告未写口径，引用时必须带上）。
+   * 市场分后端一直在算（combo_mkt 的分解输入），此前从未落盘，前端只能看到行业自身状态。
+   * 纯文本首屏直出，不依赖 echarts / series.js —— 与 renderFcNote 同一条纪律（gate_edge 坏6）。 */
+  var MK_NOTE = '口径：市场状态由<b>沪深300 自身 OBOS 分</b>按 PIT 扩张分位阈值分档'
+    + '（&lt;40 偏冷 / 40–60 中性 / &gt;60 偏热，只用当日及之前数据），与行业分同算法同参数。'
+    + '历史分层（<b>2023-05～2026-07</b> 固定窗口，样本以 2024 年为主，未来 20 日）：'
+    + '<b>市场偏热 × 行业深热</b>（行业分 ≥80）绝对 +1.50% / 超额 +1.19%，胜率 56.5%，n=1814；'
+    + '<b>市场偏热 × 行业深冷</b>（≤20）绝对 -3.17%，但超额仅 -0.20% —— 该值为'
+    + '<b>绝对收益口径</b>下的机会成本，不是本金下跌风险。固定窗口结论不构成未来保证。';
+
+  /* 迷你趋势（近 60 日）：内联 SVG，不引 echarts —— 首屏直出，且无第三方依赖失败面。 */
+  function mkSparkSVG(vals, color) {
+    var vs = [], i, v;
+    for (i = 0; i < vals.length; i++) { v = vals[i]; if (typeof v === 'number' && isFinite(v)) vs.push(v); }
+    if (vs.length < 2) return '';
+    var lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs);
+    if (!(hi > lo)) hi = lo + 1;                 // 全平时不除零
+    var W = 172, H = 34, pad = 3;
+    var n = vals.length <= 1 ? 1 : vals.length - 1;
+    var Y = function (x) { return H - pad - (H - 2 * pad) * ((x - lo) / (hi - lo)); };
+    var segs = [], cur = [];
+    for (i = 0; i < vals.length; i++) {
+      v = vals[i];
+      if (typeof v === 'number' && isFinite(v)) cur.push([pad + (W - 2 * pad) * (i / n), Y(v)]);
+      else if (cur.length) { segs.push(cur); cur = []; }   // 空档断开，不跨缺口连线误导
+    }
+    if (cur.length) segs.push(cur);
+    var d = segs.map(function (s) {
+      return s.map(function (p, j) {
+        return (j ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1);
+      }).join('');
+    }).join('');
+    var mid = Y(50).toFixed(1);                  // 50 分参考线，便于读"在高位还是低位"
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">'
+      + '<line x1="0" y1="' + mid + '" x2="' + W + '" y2="' + mid + '" stroke="' + COLORS.idx
+      + '" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.5"/>'
+      + '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8"'
+      + ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  }
+
+  function renderMarket() {
+    var m = DATA.market;
+    var bar = document.getElementById('mkBar');
+    if (!bar) return;
+    /* 数据缺失/字段退化时保持 hidden：显示 "-" 会让人以为"市场状态未知但仍可参考"，
+     * 而这一块的价值恰恰在"没有它就不该单看行业状态"。宁可不显示。 */
+    if (!m || typeof m.cur_score !== 'number' || !isFinite(m.cur_score)) return;
+    var col = ST_COLOR[m.state] || '#98a2b3';
+    document.getElementById('mkName').textContent = m.name || '沪深300';
+    var sc = document.getElementById('mkScore');
+    sc.textContent = fmt(m.cur_score);
+    sc.style.color = col;
+    var chip = document.getElementById('mkChip');
+    chip.textContent = m.state || '-';
+    chip.style.background = col;
+    var L = [];
+    if (typeof m.ob_line === 'number') L.push('超买线 ' + fmt(m.ob_line));
+    if (typeof m.hot_line === 'number') L.push('偏热线 ' + fmt(m.hot_line));
+    if (typeof m.cold_line === 'number') L.push('偏冷线 ' + fmt(m.cold_line));
+    if (typeof m.os_line === 'number') L.push('超卖线 ' + fmt(m.os_line));
+    var rc = m.recent || [];
+    var rd = (m.recent_dates && m.recent_dates.length)
+      ? '（' + m.recent_dates[0] + ' ~ ' + m.recent_dates[m.recent_dates.length - 1] + '）' : '';
+    document.getElementById('mkLines').innerHTML =
+      (L.length ? 'PIT 动态阈值：' + L.join(' · ') + ' ｜ ' : '')
+      + '近 ' + rc.length + ' 个交易日走势' + rd
+      + (m.scope_note ? ' ｜ ' + m.scope_note : '');
+    document.getElementById('mkNote').innerHTML = MK_NOTE;
+    var sp = document.getElementById('mkSpark');
+    if (sp) sp.innerHTML = mkSparkSVG(rc, col);
+    bar.hidden = false;
+  }
+
+
   /* ---------- 市场宽度图 ---------- */
   
 
@@ -577,6 +656,7 @@
 
   renderQuality();
   renderSummary();
+  renderMarket();
   renderTable();
   renderBacktest();
   bindEvents();

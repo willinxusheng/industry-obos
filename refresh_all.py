@@ -16,8 +16,10 @@
   门禁只跑了三分之一"的假象 —— 比没有这个脚本更危险，故按真实链路重写。
 
 ⚠️ 数据纪律：data/ 由 CI 独家写盘。本地跑完请 `git checkout -- data/` 还原，
-   不要把本地产物提交上去（data/prediction_log.jsonl 例外：它是正式审计资产，
-   本地跑会被污染，用 `git restore` 而非 rm 恢复 CI 版本）。
+   不要把本地产物提交上去。两份审计资产例外——它们是正式入库的日志，本地跑会被多追加行，
+   必须用 `git restore`（而非 rm）恢复 CI 版本：
+     data/prediction_log.jsonl      预测快照（compute.py 主模式追加）
+     data/model_metrics_log.jsonl   模型指标（compute.py 主模式追加，metrics_drift.py 读）
 
 用法: python refresh_all.py
 """
@@ -43,6 +45,9 @@ PY_STEPS = [
 AUDIT_STEPS = [
     ["audit_predictions.py"],
     ["test_audit_logic.py"],     # 统计口径的受控反演自检（不读真实数据）
+    # [2026-09-12] 模型指标漂移监控（读 compute 刚追加的 model_metrics_log.jsonl）。
+    # 放在这里是为了让本地一键刷新与 CI 走同一套读取端 —— 只写不读的日志等于没有。
+    ["metrics_drift.py"],
 ]
 # [2026-09-05] 核心算法不变式：无前视泄漏 / 非有限值不入秩 / 分位区间不退化。
 #   用合成数据跑，不依赖 data/，放在哪儿都行；放在此处是为了让"本地一键刷新"

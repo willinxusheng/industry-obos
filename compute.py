@@ -30,6 +30,13 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 #   存储紧凑化: 只留复核必需的终点值(s/med/lo/hi@30d + p_up), 每行业每天 ~120B.
 PRED_LOG = os.path.join(BASE, "data", "prediction_log.jsonl")
 
+# [2026-09-12] 模型指标日志: 每次主模式计算追加一行"模型当时长什么样"的汇总指标,
+#   与 PRED_LOG 的分工是 —— 那份记"预测了什么"(逐行业, 供 30 交易日后复核准确性),
+#   这份记"模型自身是否在漂移"(方向/AUC/Brier/覆盖/MAE/市场状态), 供跨日对照。
+#   没有它, "准确率是不是在缓慢退化"只能去翻每天被覆盖的产物或 git 历史, 无法形成序列。
+#   同样由 CI 独家提交(见 daily.yml commit 清单), 本地不提交。
+MET_LOG = os.path.join(BASE, "data", "model_metrics_log.jsonl")
+
 
 def append_prediction_log(asof, industries):
     """按 asof 幂等追加预测快照行(JSON Lines). 只对主模式(31 一级行业)启用."""
@@ -71,6 +78,45 @@ def append_prediction_log(asof, industries):
             f.write("\n".join(lines) + "\n")
         print("prediction log appended: %d industries @ %s (→%s)"
               % (len(lines), asof, PRED_LOG))
+
+
+def append_metrics_log(asof, out):
+    """按 asof 幂等追加模型指标快照(JSON Lines, 每个交易日一行)。
+
+    幂等判据与 append_prediction_log 同款: **裸日期子串预筛 + 解析确认**。
+    别改成前缀匹配(与 json.dumps 的键顺序耦合)或 '"asof":"%s"'(与 separators 耦合)——
+    CI 一天最多跑 48 次, 幂等一旦静默失效就会同日重复追加, 漂移序列被重复样本带偏。
+    """
+    if os.path.exists(MET_LOG):
+        with open(MET_LOG, encoding="utf-8") as f:
+            for line in f:
+                if asof not in line:
+                    continue
+                try:
+                    if json.loads(line).get("asof") == asof:
+                        return  # 当日已记录, 幂等
+                except ValueError:
+                    continue
+    bt = out.get("backtest") or {}
+    main = bt.get("main_method") or "-"
+    mm = bt.get(main) or {}
+    pc = bt.get("p_up_calib") or {}
+    mk = out.get("market") or {}
+    w = out.get("weights") or {}
+    rec = {
+        "asof": asof, "main": main,
+        "dir_acc": mm.get("dir_acc"), "block_t": mm.get("block_t"), "block_p": mm.get("block_p"),
+        "p_up_auc": bt.get("p_up_auc"), "brier": pc.get("brier_raw"),
+        "mae": mm.get("mae_end"), "rmse": mm.get("rmse_path"),
+        "cov_raw": mm.get("coverage_raw"), "cov_cal": mm.get("coverage_cal"),
+        "n": mm.get("n"), "n_ind": len(out.get("industries") or []),
+        "mkt_state": mk.get("state"), "mkt_score": mk.get("cur_score"),
+        "lam": w.get("lam"), "pit_jump_max": w.get("pit_jump_max"),
+    }
+    with open(MET_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n")
+    print("model metrics log appended: %s (main=%s dir=%s auc=%s) -> %s"
+          % (asof, main, rec["dir_acc"], rec["p_up_auc"], MET_LOG), flush=True)
 
 
 # ---------------- 数据质量门禁 ----------------
@@ -386,6 +432,55 @@ def r1(x):
     return round(x, 1) if isinstance(x, (int, float)) and math.isfinite(x) else None
 
 
+def pit_lines(score):
+    """按 PIT 扩张分位给出 (ob_series, os_series, ob_line, os_line, hot_line, cold_line)。
+
+    [2026-09-12] 从行业循环里提取, 供"行业"与"市场(沪深300)"两条链路共用。
+    理由: 加市场维度时若另抄一份阈值逻辑, 两条链路的"偏热/超买"边界迟早会漂移,
+    用户就会在同一个页面上看到两套口径(行业说偏热、市场说中性, 而两者分数相同)。
+    调用方传入的 score 必须是**全精度**序列(不是 r1 后的展示值)。
+    """
+    ob_s = expanding_quantile(score, OB_Q)
+    os_s = expanding_quantile(score, OS_Q)
+    hot_s = expanding_quantile(score, HOT_Q)
+    cold_s = expanding_quantile(score, COLD_Q)
+    # 偏热/偏冷边界同样走 PIT 分位(75/25), 而不是 (ob+os)/2 中点二分.
+    # 中点二分会让"中性"档永远为空, 且普跌行情下 20+ 个行业全被压进"偏冷", 分档失去信息量.
+    ob_line, os_line = ob_s[-1], os_s[-1]
+    hot_line, cold_line = hot_s[-1], cold_s[-1]
+    svals = [x for x in score if x is not None]
+    if ob_line is None or os_line is None:
+        ob_line = ob_line or (max(svals) if svals else 80)
+        os_line = os_line or (min(svals) if svals else 20)
+    if hot_line is None:
+        hot_line = ob_line - (ob_line - os_line) * 0.25
+    if cold_line is None:
+        cold_line = os_line + (ob_line - os_line) * 0.25
+    # 保证 os <= cold < hot <= ob, 避免样本不足期出现倒挂
+    cold_line = min(max(cold_line, os_line), ob_line)
+    hot_line = min(max(hot_line, cold_line), ob_line)
+    return ob_s, os_s, ob_line, os_line, hot_line, cold_line
+
+
+def state_of(cs, ob_line, os_line, hot_line, cold_line):
+    """状态判定, 与上面四条线同源(同一份阈值 -> 同一个分档)。
+
+    ⚠️ cs 必须传**全精度**值: 四条线由全精度序列算出, 若拿 r1 后的展示值来比,
+    就会出现"分数 60.8 与偏热线 60.8 相等却被判成中性"这类自相矛盾(2026-09-09 血泪契约)。
+    """
+    if cs is None:
+        return "-"
+    if cs >= ob_line:
+        return "超买"
+    if cs <= os_line:
+        return "超卖"
+    if cs >= hot_line:
+        return "偏热"
+    if cs <= cold_line:
+        return "偏冷"
+    return "中性"
+
+
 # ---------------- 主流程 ----------------
 def main(sub_mode=False):
     # [2026-09-03] 二级行业模式: 同一条 PIT/回测/校准管线跑申万二级 109 个,
@@ -582,38 +677,12 @@ def main(sub_mode=False):
     raw_lines = []
     for k, b in enumerate(base):
         score = b["score"]
-        ob_s = expanding_quantile(score, OB_Q)
-        os_s = expanding_quantile(score, OS_Q)
-        # 偏热/偏冷边界同样走 PIT 分位(75/25), 而不是 (ob+os)/2 中点二分.
-        # 中点二分会让"中性"档永远为空, 且普跌行情下 20+ 个行业全被压进"偏冷", 分档失去信息量.
-        hot_s = expanding_quantile(score, HOT_Q)
-        cold_s = expanding_quantile(score, COLD_Q)
-        ob_line, os_line = ob_s[-1], os_s[-1]
-        hot_line, cold_line = hot_s[-1], cold_s[-1]
+        # [2026-09-12] 阈值与分档统一走 pit_lines/state_of: 与下方"市场(沪深300)"块同一份实现,
+        #   两条链路口径不可能分叉. 行为与提取前的内联版本逐字等价(A/B 已验证产物零差异).
+        ob_s, os_s, ob_line, os_line, hot_line, cold_line = pit_lines(score)
         cs = score[-1]
         svals = [x for x in score if x is not None]
-        if ob_line is None or os_line is None:
-            ob_line = ob_line or (max(svals) if svals else 80)
-            os_line = os_line or (min(svals) if svals else 20)
-        if hot_line is None:
-            hot_line = ob_line - (ob_line - os_line) * 0.25
-        if cold_line is None:
-            cold_line = os_line + (ob_line - os_line) * 0.25
-        # 保证 os <= cold < hot <= ob, 避免样本不足期出现倒挂
-        cold_line = min(max(cold_line, os_line), ob_line)
-        hot_line = min(max(hot_line, cold_line), ob_line)
-        if cs is None:
-            state = "-"
-        elif cs >= ob_line:
-            state = "超买"
-        elif cs <= os_line:
-            state = "超卖"
-        elif cs >= hot_line:
-            state = "偏热"
-        elif cs <= cold_line:
-            state = "偏冷"
-        else:
-            state = "中性"
+        state = state_of(cs, ob_line, os_line, hot_line, cold_line)
         if cs is not None and svals:
             p_ob = sum(1 for x in svals if x >= cs) / len(svals)
             p_os = sum(1 for x in svals if x <= cs) / len(svals)
@@ -809,6 +878,42 @@ def main(sub_mode=False):
     bt["combo_w"] = COMBO_W
     bt["industries_tested"] = len(industries)
 
+    # [2026-09-12] 市场维度(沪深300 自身 OBOS 分)首次进入产物与前端。
+    #   此前 mkt_score 造出来后只当作 combo_mkt 的分解输入, 从未落盘 —— 前端能看到的
+    #   只有"行业自身"状态, 而第三轮深回测(docs/deep_backtest3_2026-09-12.md)恰好指出
+    #   判据里缺的就是这一维(同一行业状态在不同市场环境下含义相反):
+    #     市场偏热 + 行业深热: 绝对 +1.50% / 超额 +1.19%, 胜率 56.5%, n=1814
+    #                          —— 唯一额与绝对两端同时为正且样本充足的组合
+    #     市场偏热 + 行业深冷: 绝对 -3.17% / 超额 -0.20%(**绝对收益口径**, 即跑输大盘的
+    #                          机会成本, 不是本金下跌风险; 首轮报告未写口径, 引用时务必带上)
+    #   展示口径与回测一致: 阈值线仍走同一套 PIT 扩张分位(pit_lines), regime 用 E3 口径 A
+    #   的 40/60 分界, 只用当日及之前数据 —— 页面上不会出现"回测说偏热、页面说中性"。
+    mkt_raw = [float(x) if np.isfinite(x) else None for x in mkt_score]
+    _, _, mob, mos, mhot, mcold = pit_lines(mkt_raw)
+    mcur = mkt_raw[-1]
+    market = {
+        "name": hs["name"], "code": hs.get("code"),
+        "cur_score": r1(mcur),
+        "ob_line": r1(mob), "os_line": r1(mos),
+        "hot_line": r1(mhot), "cold_line": r1(mcold),
+        "state": state_of(mcur, mob, mos, mhot, mcold),
+        "regime": regime_of(mcur),   # <40 偏冷 / 40-60 中性 / >60 偏热 (与回测分层口径 A 一致)
+        "recent_dates": ref_dates[-60:],
+        "recent": [r1(x) for x in mkt_raw[-60:]],   # 近 60 日迷你趋势(纯展示, 不参与判定)
+        # [2026-09-12] 披露"两条管线各自拟合"这一事实。市场分依赖 PIT 权重, 而权重是由
+        #   本管线的行业样本(31 个一级 / 109 个二级)拟合出来的 —— 同一交易日两条链路的
+        #   市场分并不相等(实测 22.9 vs 20.1, hot_line 62.9 vs 65.3), 档位通常一致但
+        #   边界附近可能不同。用户在看板间来回切时会同时看到这两个数字, 不写明就是"数据打架"。
+        "scope": "sub" if sub_mode else "main",
+        "scope_note": ("" if not sub_mode else
+                       "市场分与阈值线按本管线 PIT 权重重算：二级（109 个）与主看板（31 个）"
+                       "互相独立，同一日可能相差数分，档位在边界附近可能不同。"),
+        "method": ("沪深300 自身 OBOS 分(与行业同算法同参数, 含形态/乖离/相对强度三因子与 PIT 权重), "
+                   "分档线同为 PIT 扩张分位(%d obs 起): %d/%d 分位定超买超卖、%d/%d 分位定偏热偏冷; "
+                   "只用当日及之前数据"
+                   % (PIT_MIN_N, int(OB_Q * 100), int(OS_Q * 100), int(HOT_Q * 100), int(COLD_Q * 100))),
+    }
+
     out = {
         "asof": asof, "win": WIN, "horizon": HORIZON,
         "quality": quality,
@@ -851,6 +956,7 @@ def main(sub_mode=False):
                    "price_basis": "板块指数点位，未做复权（接口对 qfq 参数无响应，已实测与未复权逐日完全一致）",
                    "analog_pool": lib.M},
         "benchmark": {"name": hs["name"], "dates": ref_dates, "close": bclose, "fq_key": bfq},
+        "market": market,
         "breadth": {"dates": ref_dates, "pct": breadth_pct, "hot_cnt": hot_cnt,
                     "cold_cnt": cold_cnt, "above_cnt": above_cnt, "n_ind": len(industries)},
         "backtest": bt,
@@ -864,6 +970,10 @@ def main(sub_mode=False):
 
     if not sub_mode:
         append_prediction_log(asof, industries)
+        append_metrics_log(asof, out)
+    print("market(%s): score=%s lines ob/os/hot/cold=%s/%s/%s/%s state=%s regime=%s"
+          % (market["name"], market["cur_score"], market["ob_line"], market["os_line"],
+             market["hot_line"], market["cold_line"], market["state"], market["regime"]), flush=True)
 
     print("asof:", asof, "industries:", len(industries),
           "with_forecast:", sum(1 for x in industries if x["forecast"]["median"]))

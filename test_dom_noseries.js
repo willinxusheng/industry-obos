@@ -233,6 +233,20 @@ async function runBoard(cfg, mode) {
       ck(/跨行业类比推演/.test(fcHtml), 'fcNote 含「跨行业类比推演」段');
       ck(!/undefined|NaN/.test(fcHtml), 'fcNote 无 undefined/NaN', (fcHtml.match(/undefined|NaN/g) || []).join(','));
 
+      /* [2026-09-12] 市场环境条：与 fcNote 同一条契约 —— 纯文本首屏直出、不等时序。
+       * 它回答的是"这些行业状态该放在什么市场环境下读"；渲染失败会静默退化成
+       * 只剩行业状态，用户看不出少了什么，故必须在"时序缺席"这一最差场景下也断言它完整。 */
+      const mkBar = d.getElementById('mkBar');
+      const mkNote = d.getElementById('mkNote');
+      const mkScore = d.getElementById('mkScore');
+      const mkSpark = d.getElementById('mkSpark');
+      ck(mkBar && mkBar.hidden === false, '市场环境条已显示（不等时序）',
+        mkBar ? ('hidden=' + mkBar.hidden) : '(无元素)');
+      ck(/口径/.test(mkNote ? mkNote.innerHTML : ''), '市场环境条含口径说明（含样本窗口）');
+      ck(/^-?\d+(\.\d+)?$/.test((mkScore ? mkScore.textContent : '').trim()),
+        '市场分数是数字（未塌陷为 "-"）', mkScore ? mkScore.textContent : '(无)');
+      ck(/<svg/.test(mkSpark ? mkSpark.innerHTML : ''), '迷你趋势内联渲染（不依赖 echarts）');
+
       /* 详情区的期望随场景而变，但"不能空白"是两种场景的共同底线。
        * [2026-09-04] 原先只断言 /加载中|加载失败/，那让"永远转圈"也能通过。
        * 404 场景下请求已经彻底失败，前端必须收口给出终态提示 —— 停在"加载中"
