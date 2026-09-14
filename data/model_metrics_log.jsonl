@@ -1,1 +1,2 @@
 {"asof":"2026-09-11","main":"combo_mkt","dir_acc":0.694,"block_t":5.75,"block_p":0.0,"p_up_auc":0.76,"brier":0.1986,"mae":18.0,"rmse":18.73,"cov_raw":0.571,"cov_cal":0.499,"n":961,"n_ind":31,"mkt_state":"偏冷","mkt_score":22.9,"lam":0.429,"pit_jump_max":0.75}
+{"asof":"2026-09-14","main":"combo_mkt","dir_acc":0.689,"block_t":5.72,"block_p":0.0,"p_up_auc":0.761,"brier":0.1987,"mae":18.0,"rmse":18.91,"cov_raw":0.56,"cov_cal":0.498,"n":961,"n_ind":31,"mkt_state":"偏冷","mkt_score":19.3,"lam":0.429,"pit_jump_max":0.75}
