@@ -177,6 +177,31 @@ jobs:
 
             if (!alert) {
               console.log('✅ 健康：数据已达应到交易日' + (problems.length ? '（有非致命提示：' + problems.join('；') + '）' : '，源与线上 Pages 均正常'));
+              // ── 告警闭环（2026-09-22 补）─────────────────────────────────────
+              // 此前这里直接 return，只开不关：历史遗留的 ci-alert issue 会一直挂在
+              // 仓库首页，用户看到"有更新失败的提示"但数据其实早已正常。
+              // 判据复用本步 already 算好的 observed >= expected（即"应到交易日的数据
+              // 已能在源/线上读到"），不另立一套口径，避免两处判据分叉。
+              // 关闭前留评论写明是哪次观测把它判健康的 —— 不做静默关闭。
+              try {
+                const openAlerts = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'], per_page: 100 });
+                const items = openAlerts.data.filter(i => !i.pull_request);
+                if (!items.length) {
+                  console.log('无 open 的 ci-alert issue，无需关闭');
+                } else {
+                  const closedAt = new Date().toISOString();
+                  for (const it of items) {
+                    await github.rest.issues.createComment({
+                      owner, repo, issue_number: it.number,
+                      body: `✅ 看门狗复检已恢复，自动关闭。\n北京时间 ${today} ${hm}：源 data.js asof=${srcAsOf || '缺失'}、线上 Pages asof=${liveAsOf || '缺失'}，应到交易日 ${expected}。\n关闭时间：${closedAt}`
+                    });
+                    await github.rest.issues.update({ owner, repo, issue_number: it.number, state: 'closed', state_reason: 'completed' });
+                    console.log('已关闭 ci-alert issue #' + it.number);
+                  }
+                }
+              } catch (e) {
+                console.log('::warning::自动关闭 ci-alert issue 失败（不影响本次健康判定）: ' + e.message);
+              }
               return;
             }
 
@@ -208,6 +233,14 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number: found.number, body: `再次触发 @ ${ts}\n${body}` });
               console.log('已更新既有 ci-alert issue #' + found.number);
             } else {
-              const created = await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
-              console.log('已开 ci-alert issue #' + created.data.number);
+              // label 三级兜底：仓库若缺 ci-alert label，带 label 建 issue 会 422、
+              // 让整条告警步骤失败。降级为无 label 建，保证告警一定发得出去。
+              try {
+                const created = await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
+                console.log('已开 ci-alert issue #' + created.data.number);
+              } catch (e) {
+                console.log('::warning::带 label 建 issue 失败，降级为无 label: ' + e.message);
+                const created = await github.rest.issues.create({ owner, repo, title: TITLE, body });
+                console.log('已开（无 label）ci-alert issue #' + created.data.number);
+              }
             }

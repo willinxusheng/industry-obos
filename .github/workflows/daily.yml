@@ -69,7 +69,21 @@ jobs:
         uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # 必须要完整历史：Freshness gate 的源码命中判定要 `git diff before..after`，
+          # 部署后验收也要能回溯产物提交。
           fetch-depth: 0
+          # [2026-09-22] 必须显式 ref: main —— 不能用默认的 github.sha。
+          #   默认行为检出的是「触发本次 run 的那个 sha」。定时 run 被 concurrency group
+          #   排队延后启动时，main 早已前进，它却仍从旧 sha 起跑并重建全部产物，
+          #   于是必然与「排队期间已完成的那次 run」在同一批产物文件上撞车。
+          #   实测 run 35708552276：09:07:02 的 schedule 触发，排队到 09:13:21 才启动
+          #   （前一次 dispatch run 09:11:52 刚结束并推送了 4478aae），checkout 仍是
+          #   0485f46 -> 重算后 rebase 撞 sub_data.js / sub_series.js 内容冲突，
+          #   重试一次仍冲突 -> exit 1 -> 误报"更新失败"（线上数据 4 分钟后其实已补齐）。
+          #   改 ref: main 后，排队启动的 run 拿到的是最新 main，Freshness gate 读到
+          #   data.js 的 asof 已达应到交易日 -> 直接 skip，不重建/不提交/不冲突，
+          #   顺带省掉一次约 10 分钟的全量重算。
+          ref: main
 
       # 校验「Freshness gate 自身的源码命中判定」——纯静态检查，不取数不联网。
       # 必须放在 Freshness gate 之前且只在 push 时跑：daily.yml 自己不在前端源码清单里，
@@ -480,7 +494,72 @@ jobs:
           # 避免误触发"每日更新失败"issue；仅提示丢失防停用戳，数据更新已先行完成）
           git push origin main || echo "::warning::keep-alive 戳推送失败（不影响今日数据更新，仅丢失防 GitHub 停用定时的戳，请检查推送权限/并发冲突）"
 
-      # 失败可见告警（仅主触发 16:30 与手动触发，避免兜底重试重复噪音）
+      # ── 告警闭环（2026-09-22 补）────────────────────────────────────────────
+      # 此前只有"开 issue"分支、没有"关"的分支：任何一次偶发失败都会在仓库首页
+      # 永久挂一个红标 ⚠️ 直到人工处理 —— 用户看到的"线上有更新失败的提示"就是这么来的。
+      #   实测：09-22 09:07 的 run 因产物 rebase 冲突失败开了 issue #3，
+      #   09:30 的 run 已成功补齐数据，issue 却一直开着。
+      # 关闭判据刻意**不复用 steps.fresh.outputs.skip**：那个值区分不了
+      #   「盘中铁律跳过（数据本来就该落后）」与「数据已最新而跳过（链路健康）」——
+      #   两者都输出 skip=true。改为自判「线上产物 asof 是否已达应到交易日」，
+      #   用的是与 Freshness gate 完全同一套北京时间纯算术，两处口径不会分叉。
+      # 位置在 Alert 之前：一个负责关、一个负责开，读起来是一条完整的状态机。
+      - name: Resolve stale alerts (auto-close when healthy)
+        if: success()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const ts = new Date().toISOString();
+
+            // 线上产物交易日（checkout 到的是 main，skip 时即是已发布的那一份）
+            let asof = '';
+            try {
+              const t = fs.readFileSync('data.js', 'utf8');
+              const m = t.match(/"asof"\s*:\s*"([0-9-]+)"/);
+              if (m) asof = m[1];
+            } catch (e) {
+              console.log('读不到 data.js: ' + e.message);
+            }
+
+            // 应到交易日：与 Freshness gate 同一套纯算术（UTC+8，不依赖 tzdata）
+            const DAY = 86400000;
+            const bjMs = Date.now() + 8 * 3600 * 1000;
+            const bj = new Date(bjMs);
+            const today = bj.toISOString().slice(0, 10);
+            const tmin = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+            const dow = bj.getUTCDay();          // 0=Sun .. 6=Sat
+            const dayBack = (n) => new Date(bjMs - n * DAY).toISOString().slice(0, 10);
+            let expected;
+            if (dow === 6) expected = dayBack(1);        // 周六 -> 周五
+            else if (dow === 0) expected = dayBack(2);   // 周日 -> 周五
+            else if (tmin >= 960) expected = today;      // 北京 16:00 后 -> 今天
+            else if (dow === 1) expected = dayBack(3);   // 周一凌晨 -> 上周五
+            else expected = dayBack(1);                  // 其余凌晨 -> 昨天
+            const hm = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
+            console.log(`auto-close 判定: asof=${asof || '缺失'} expected=${expected} 北京 ${today} ${hm}`);
+
+            if (!asof) { console.log('读不到产物 asof，无法判定健康 -> 保留告警'); return; }
+            if (asof < expected) {
+              console.log(`数据仍落后（asof=${asof} < 应到 ${expected}），保留告警`);
+              return;
+            }
+
+            const open = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'], per_page: 100 });
+            const alerts = open.data.filter(i => !i.pull_request);
+            if (!alerts.length) { console.log('无 open 的 ci-alert issue，无需关闭'); return; }
+            for (const it of alerts) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: it.number,
+                body: `✅ 链路已恢复，自动关闭。\n本次运行成功，线上产物 asof=${asof} 已达应到交易日 ${expected}。\n运行日志：${runUrl}\n关闭时间：${ts}`
+              });
+              await github.rest.issues.update({ owner, repo, issue_number: it.number, state: 'closed', state_reason: 'completed' });
+              console.log(`已关闭 ci-alert issue #${it.number}`);
+            }
+
+      # 失败可见告警（仅 schedule 与 workflow_dispatch 触发，避免兜底重试重复噪音）
       - name: Alert on failure (open/update issue)
         if: failure() && steps.fresh.outputs.skip != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: actions/github-script@v8
@@ -490,13 +569,24 @@ jobs:
             const { owner, repo } = context.repo;
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const ts = new Date().toISOString();
-            const body = `每日更新流水线失败（${ts}）。\n运行日志：${runUrl}\n请检查取数源（腾讯/东财/新浪是否可达）/ 质量门禁是否异常。`;
+            const body = `每日更新流水线失败（${ts}）。\n运行日志：${runUrl}\n`
+              + `请检查取数源（腾讯/东财/新浪是否可达）/ 质量门禁是否异常。\n\n`
+              + `说明：若下一次定时运行（约 30 分钟内）成功、且线上数据已达应到交易日，`
+              + `本 issue 会被**自动关闭**（同 workflow 的 \`Resolve stale alerts\` 步骤）。`
+              + `因此本 issue 开着 = 此刻仍未恢复，不必人工值守。`;
             const existing = await github.rest.issues.listForRepo({ owner, repo, state: 'open', labels: ['ci-alert'] });
             const found = existing.data.find(i => i.title === TITLE);
             if (found) {
               await github.rest.issues.createComment({ owner, repo, issue_number: found.number, body: `再次失败 @ ${ts}\n${runUrl}` });
             } else {
-              await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
+              // label 三级兜底：仓库若缺 ci-alert label，带 label 建 issue 会 422、
+              // 让告警步骤自身失败（连"再次失败"的评论都发不出去）。降级为无 label 建。
+              try {
+                await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ci-alert'] });
+              } catch (e) {
+                console.log('::warning::带 label 建 issue 失败，降级为无 label: ' + e.message);
+                await github.rest.issues.create({ owner, repo, title: TITLE, body });
+              }
             }
 
   # ── jsdom 端到端门禁（独立 job，与每日刷新解耦）────────────────────────────
