@@ -39,6 +39,15 @@ def load():
         hs = json.load(f)
     ref_dates = hs["dates"]
     bclose = hs["close"]
+    # 受控截断: CUT_DATE=YYYY-MM-DD 剔除该日之后的样本(典型用途: 剔除盘中不完整K线)。
+    # 口径与 bt_official.py 一致(d <= cut; YYYY-MM-DD 字符串比较即日期比较)。
+    # 放在 load() 里, backtest_deep/backtest_ext/bt_official 三个脚本同口径受益。
+    cut = os.environ.get("CUT_DATE")
+    if cut:
+        idx = max(i for i, d in enumerate(ref_dates) if d <= cut)
+        ref_dates = ref_dates[:idx + 1]
+        bclose = bclose[:idx + 1]
+        print(">>> CUT_DATE=%s 生效: 样本截断到 %s (%d 日)" % (cut, ref_dates[-1], len(ref_dates)))
     n_t = len(ref_dates)
     base = []
     ind_meta = []

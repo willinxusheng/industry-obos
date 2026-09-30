@@ -47,7 +47,7 @@ except ImportError:
 # ⚠️ 改 daily.yml 的 grep 清单必须同步改这里，否则本门禁立刻判红 —— 这正是它存在的意义。
 SRC_FILES = ('app.js', 'sub_app.js', 'build_html.py', 'template.html', 'template_sub.html',
              'compute.py', 'obos_core.py',
-             'fetch_data.py', 'fetch_sub_data.py', 'fetch_benchmark.py',
+             'fetch_data.py', 'fetch_sub_data.py', 'fetch_benchmark.py', 'fetch_common.py',
              'test_render.js', 'gate_edge_test.js')
 
 fail = 0

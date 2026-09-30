@@ -132,6 +132,13 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     #   而不再重试 —— 双重说谎。故单独统计, 整体缺失时按致命处理。
     miss_last = 0
     miss_last_codes = []
+    # [2026-09-30] 系统性平线检测(集合竞价/未落定K线残留): 行业指数由几十只成分股加权,
+    #   真实交易日"开=收=高=低"在数学上不可能; 数据源在竞价/盘中窗口返回的占位行恰是
+    #   这种平线且量<前日5%(09-30 实测 235,771 vs 前日 23,546,500 = 1.0%)。
+    #   fetch 层已有时间判据剔除(16:00 前的当天bar), 这里是第二道防线
+    #   (防时钟错位/手动触发/源端盘后仍返回竞价残留)。过半行业命中 => fatal。
+    flat_last = 0
+    flat_last_codes = []
     spans = []
     fq_keys = set()
     vacuum = {}  # [2026-09-03 二级模式] 指数口径真空期: 缺失全部集中在"连续有效段起点"之前
@@ -140,6 +147,16 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         rows = v["rows"]
         ds = [r[0] for r in rows]
         cmap = {r[0]: r[2] for r in rows}
+        if len(rows) >= 2:
+            try:
+                _o, _c, _h, _l = (float(rows[-1][1]), float(rows[-1][2]),
+                                  float(rows[-1][3]), float(rows[-1][4]))
+                _vol, _pvol = float(rows[-1][5]), float(rows[-2][5])
+                if _o == _c == _h == _l and _pvol > 0 and _vol < _pvol * 0.05:
+                    flat_last += 1
+                    flat_last_codes.append(v.get("name") or code)
+            except (TypeError, ValueError):
+                pass
         n_miss_code = sum(1 for d in bdates if d not in cmap)
         if relax_prefix_vacuum and n_miss_code:
             # 判据: 最后一个缺失日之后全有(连续有效段), 且该段 >= 60% 全程 ->
@@ -219,20 +236,28 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         issues.append("%d 个行业在 asof 日(%s) 无收盘数据(可能已停止发布)，其分数止于前一交易日：%s"
                       % (miss_last, bdates[-1], "、".join(sorted(miss_last_codes)[:8])
                          + ("等" if miss_last > 8 else "")))
+    if flat_last:
+        issues.append("%d 个行业末行为平线且量<前日5%%(未落定K线特征，疑竞价/盘中残留)：%s"
+                      % (flat_last, "、".join(sorted(flat_last_codes)[:8])
+                         + ("等" if flat_last > 8 else "")))
     cover = 1.0 - (miss / float(n_ind * n_dt)) if n_ind * n_dt else 0.0
     # [2026-09-05] 结构性/口径性问题必须 FAIL —— 它们不是"数据脏了一点"，而是"看板在说谎"：
     #   行业数残缺、复权口径污染(PIT 不可复现)、asof 日整体无数据。
     #   旧公式只把 dup / 零值 / 乱序 当 FAIL，这三类因此全部落进 WARN；而 WARN 不阻断部署
     #   （门禁只在 FAIL 时 SystemExit），等于这三条防御形同虚设。受控注入实测确认：
     #   26/31 行业、fq_key=qfq、全行业缺末日 三种故障注入后均为 WARN 放行。
+    # [2026-09-30] fatal 追加: 系统性未落定平线(过半行业) —— 平线冒充收盘价发布后,
+    #   asof 会变成当天, freshness gate 误判"已最新"而停止重试, 平线挂一整天。
     fatal = bool(dup or zero_c or unsorted or n_ind != expect_n or bad_fq
-                 or (miss_last and miss_last == n_ind))
+                 or (miss_last and miss_last == n_ind)
+                 or flat_last * 2 > n_ind)
     return {
         "n_industries": n_ind, "n_dates": n_dt,
         "span": [bdates[0], bdates[-1]],
         "align_coverage": round(cover, 5),
         "missing_cells": miss, "dup_dates": dup,
         "missing_last_day": miss_last,
+        "flat_last_day": flat_last,
         "prefix_vacuum": vacuum,
         "nonpositive_close": zero_c, "negative_volume": zero_v,
         "unsorted_industries": unsorted,

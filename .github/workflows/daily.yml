@@ -149,10 +149,13 @@ jobs:
           else
             IS_WEEKEND=0
           fi
-          # 盘中及收盘结算期(09:30-16:00)一律跳过：绝不发布不完整盘中K线当收盘数据。
+          # 集合竞价、盘中及收盘结算期(09:15-16:00)一律跳过：绝不发布不完整K线当收盘数据。
+          # [2026-09-30] 起点 09:30 -> 09:15：集合竞价窗口(09:15-09:29)已能撮合出
+          # "开=收=高=低"的平线bar(量仅正常日~1%)，实测能穿过当时全部校验。
+          # 前日失败+schedule 漂移到 09:15-09:29 的 run 会把平线当收盘价发布。
           # 16:00 而非 15:00，是给数据源留 1 小时落定当日日线。
           # 仅工作日生效：周末无盘中 K 线风险，源码重建(用已有收盘数据)不应被此拦下。
-          if [ "$IS_WEEKEND" = "0" ] && [ "$tmin" -ge 570 ] && [ "$tmin" -lt 960 ]; then
+          if [ "$IS_WEEKEND" = "0" ] && [ "$tmin" -ge 555 ] && [ "$tmin" -lt 960 ]; then
             echo "盘中/结算期($HM)，不发布不完整数据 -> skip"
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -200,7 +203,7 @@ jobs:
             case "$BEFORE_SHA" in
               0000000000000000000000000000000000000000) ;;
               *) SRC_HIT=$(git diff --name-only "$BEFORE_SHA".."$AFTER_SHA" 2>/dev/null \
-                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|test_render\.js|gate_edge_test\.js)$' || true) ;;
+                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|fetch_common\.py|test_render\.js|gate_edge_test\.js)$' || true) ;;
             esac
             if [ -n "$SRC_HIT" ]; then
               echo "push 命中前端源码: $(printf '%s' "$SRC_HIT" | tr '\n' ' ')"

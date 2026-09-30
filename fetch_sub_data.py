@@ -23,6 +23,8 @@ import ssl
 import time
 import urllib.request
 
+from fetch_common import atomic_write_json, drop_unsettled_tail, is_rows_finite
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -234,6 +236,9 @@ def fetch_rows(sw):
             if ds != sorted(ds):
                 errs.append("%s:unsorted" % name)
                 continue
+            if not is_rows_finite(rows):
+                errs.append("%s:nonfinite" % name)
+                continue
             return rows, name, fq
         except Exception as e:
             errs.append("%s:%s" % (name, str(e)[:60]))
@@ -246,6 +251,8 @@ def main():
     for i, (sw, name, parent, n_const) in enumerate(SW2):
         try:
             rows, src, fq = fetch_rows(sw)
+            # [2026-09-30] 未落定防护: 16:00(北京)前拉到的当天K线(含集合竞价平线)剔除
+            rows, _ = drop_unsettled_tail(rows, "pt01" + sw)
             out["pt01" + sw] = {"name": name, "sw": sw, "parent": parent,
                                 "n_constituents": n_const,
                                 "fq_key": ("qfq" if fq == "qfqday" else "day"),
@@ -256,13 +263,13 @@ def main():
             print("%d/%d pt01%s %s FAILED %s" % (i + 1, n_all, sw, name, str(e)[:120]), flush=True)
         time.sleep(0.3)
 
-    # [A5] 防部分部署：>5 行业取数全失败则整体中止（109 的 ~5%），绝不用残缺数据覆盖线上
+    # [A5] 防部分部署：>5 行业取数全失败则整体 abort（109 的 ~5%）；≤5 个失败仍写盘，
+    # 由 compute.py --sub 的 quality_gate(expect_n=109 fatal) 做最终裁决（同一级管线）。
     if len(out) < n_all - 5:
         raise SystemExit("FAILED: only %d/%d sub-industries fetched -> abort (avoid partial deploy)" % (len(out), n_all))
 
     path = os.path.join(BASE, "data", "sub_klines.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False)
+    atomic_write_json(path, out)
     print("saved:", len(out), "->", path, flush=True)
     srcset = sorted({v.get("src") for v in out.values()})
     print("sources used:", srcset, flush=True)

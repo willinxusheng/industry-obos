@@ -23,6 +23,8 @@ import ssl
 import time
 import urllib.request
 
+from fetch_common import atomic_write_json, drop_unsettled_tail, is_rows_finite
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -115,6 +117,8 @@ def parse_sina(code):
     试过 sw/sh/sz/b_/hb 等 8 种 symbol 格式全部为 null；而对个股 sh600000、指数 sh000300
     均正常返回。这是接口能力问题(不是网络或我们写错), 与运行环境无关、全球一致。
     故行业链路已不再使用它；但基准链路(沪深300 = sh000300)仍有效，那边保留。
+    ⚠️ [2026-09-30 实测] 新浪 volume 单位是【股】, 腾讯是【手】, 差 100 倍 ——
+    若日后把本源加回任何链路并使用量字段, 必须先统一量纲。
     """
     url = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            "CN_MarketData.getKLineData?symbol=sw%s&scale=240&ma=no&datalen=1300") % code
@@ -151,6 +155,9 @@ def fetch_rows(sw):
             if ds != sorted(ds):
                 errs.append("%s:unsorted" % name)
                 continue
+            if not is_rows_finite(rows):
+                errs.append("%s:nonfinite" % name)
+                continue
             return rows, name, fq
         except Exception as e:
             errs.append("%s:%s" % (name, str(e)[:60]))
@@ -163,6 +170,8 @@ def main():
     for i, (sw, name) in enumerate(SW1):
         try:
             rows, src, fq = fetch_rows(sw)
+            # [2026-09-30] 未落定防护: 16:00(北京)前拉到的当天K线(含集合竞价平线)剔除
+            rows, _ = drop_unsettled_tail(rows, "pt01" + sw)
             out["pt01" + sw] = {"name": name, "sw": sw, "fq_key": ("qfq" if fq == "qfqday" else "day"), "src": src, "rows": rows}
             print("%d/31 pt01%s %s src=%s rows=%d" % (i + 1, sw, name, src, len(rows)), flush=True)
         except Exception as e:
@@ -170,13 +179,15 @@ def main():
             print("%d/31 pt01%s %s FAILED %s" % (i + 1, sw, name, str(e)[:120]), flush=True)
         time.sleep(0.3)
 
-    # [A5] 防部分部署：>2 行业取数全失败则整体中止，绝不用残缺数据覆盖线上
+    # [A5] 防部分部署：>2 行业取数全失败则整体 abort；≤2 个失败仍写盘，
+    # 由 compute.py 的 quality_gate(expect_n=31 fatal) 做最终裁决——
+    # 即部分失败时最终一定不发布（看板保持昨日数据），fetch 层的"容忍"
+    # 只是让失败信息先落日志、不提前吞掉其他行业的取数结果。
     if len(out) < 29:
         raise SystemExit("FAILED: only %d/31 industries fetched -> abort (avoid partial deploy)" % len(out))
 
     path = os.path.join(BASE, "data", "industry_klines.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False)
+    atomic_write_json(path, out)
     print("saved:", len(out), "->", path, flush=True)
     srcset = sorted({v.get("src") for v in out.values()})
     print("sources used:", srcset, flush=True)

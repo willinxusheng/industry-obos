@@ -13,6 +13,8 @@ import ssl
 import time
 import urllib.request
 
+from fetch_common import atomic_write_json, drop_unsettled_tail, is_rows_finite
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -72,6 +74,10 @@ def parse_sina():
     # 与行业链路不同: 这里取的是沪深300【指数代码 sh000300】, 新浪实测仍有效
     # (1300 行, 与腾讯最大绝对差 0.005 —— 四舍五入精度差, 非口径差异), 故保留。
     # 行业的申万代码(sw801780)新浪不支持, 那边已移除 —— 两者的可用性不可互相推断。
+    # ⚠️ [2026-09-30 实测] 新浪 volume 单位是【股】, 腾讯是【手】, 恰好差 100 倍
+    #   (2026-09-29 沪深300: 腾讯 148,129,466 vs 新浪 14,812,946,600)。
+    #   本函数只把 close 写入 benchmark.json、量不入库, 当前无影响;
+    #   但若日后把 vol 字段加进基准、或把新浪加回行业链路, 必须先统一量纲。
     url = ("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            "CN_MarketData.getKLineData?symbol=sh000300&scale=240&ma=no&datalen=1300")
     d = get_json(url)
@@ -102,6 +108,9 @@ def fetch_rows():
             if ds != sorted(ds):
                 errs.append("%s:unsorted" % name)
                 continue
+            if not is_rows_finite(rows):
+                errs.append("%s:nonfinite" % name)
+                continue
             return rows, name, fq
         except Exception as e:
             errs.append("%s:%s" % (name, str(e)[:60]))
@@ -110,12 +119,13 @@ def fetch_rows():
 
 def main():
     rows, src, fq = fetch_rows()
+    # [2026-09-30] 未落定防护: 16:00(北京)前拉到的当天K线(含集合竞价平线)剔除
+    rows, _ = drop_unsettled_tail(rows, "benchmark")
     out = {"code": "sh000300", "name": "沪深300", "src": src,
            "fq_key": ("qfq" if fq == "qfqday" else "day"),
            "dates": [r[0] for r in rows], "close": [r[2] for r in rows]}
     path = os.path.join(BASE, "data", "benchmark.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False)
+    atomic_write_json(path, out)
     print("saved benchmark src=%s rows=%d last=%s" % (src, len(rows), rows[-1][0]))
 
 
