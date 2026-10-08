@@ -169,28 +169,64 @@ for last, at, want, why in MTD_CASES:
 
 # ══════════════════════════════════════════════════════════════════════════
 print('== [2] 单一事实源：obos_core 不得再自带假日表 ==')
-import obos_core as oc  # noqa: E402
+# ⚠️ 环境约束（2026-10-08 血泪，已由 run 37773042533 第 4 步实测）：
+#    本门禁挂在 daily.yml 的 Freshness gate **之前**，那一刻 runner 只有系统 python3，
+#    **没有 numpy**（setup-python 与 pip install 都排在后面）。所以本段**必须以静态断言为主**，
+#    绝不能 `import obos_core` —— 它顶部 `import numpy as np`，首次上线就是这么整步挂掉的。
+#    动态断言只在 numpy 可用时追加；**静态段已覆盖同等契约**（导入符号齐全 + 无第二份实现），
+#    故不存在"CI 上悄悄弱化"的问题。本地可用 CAL_STATIC_ONLY=1 模拟 CI 环境复查。
+import ast  # noqa: E402
 
-if oc.HOLIDAYS is tc.HOLIDAYS or set(oc.HOLIDAYS) == set(tc.HOLIDAYS):
-    ok('obos_core.HOLIDAYS 与 trading_calendar.HOLIDAYS 一致（%d 个假日）' % len(tc.HOLIDAYS))
-else:
-    bad('两份假日表不一致：obos_core 多 %s / 少 %s'
-        % (sorted(set(oc.HOLIDAYS) - set(tc.HOLIDAYS))[:3],
-           sorted(set(tc.HOLIDAYS) - set(oc.HOLIDAYS))[:3]))
-if oc.future_trade_dates is tc.future_trade_dates:
-    ok('future_trade_dates 为同一函数对象（未各自复制实现）')
-else:
-    bad('obos_core.future_trade_dates 不是 trading_calendar 的同一个函数 —— 又出现了第二份实现')
-if oc.CAL_FULL_UNTIL == tc.CAL_FULL_UNTIL and oc.CAL_COVER_UNTIL == tc.CAL_COVER_UNTIL:
-    ok('CAL_FULL_UNTIL=%s / CAL_COVER_UNTIL=%s 同源' % (oc.CAL_FULL_UNTIL, oc.CAL_COVER_UNTIL))
-else:
-    bad('日历覆盖常量不一致：%s vs %s' % (oc.CAL_FULL_UNTIL, tc.CAL_FULL_UNTIL))
+core_src = read('obos_core.py')
+core_tree = ast.parse(core_src)
 
-src_core = read('obos_core.py')
-if 'HOLIDAYS_2026 = [' in src_core:
-    bad('obos_core.py 里又出现了 HOLIDAYS_2026 表字面量（应只在 trading_calendar.py 定义）')
+imported_from_tc = set()
+for node in ast.walk(core_tree):
+    if isinstance(node, ast.ImportFrom) and node.module == 'trading_calendar':
+        for a in node.names:
+            imported_from_tc.add(a.name)
+
+NEED = {'HOLIDAYS', 'HOLIDAYS_2026', 'HOLIDAYS_2027', 'CAL_FULL_UNTIL', 'CAL_COVER_UNTIL',
+        'expected_asof', 'future_trade_dates', 'is_trade_day', 'missing_trade_days',
+        'next_trade_day', 'prev_trade_day'}
+need_missing = sorted(NEED - imported_from_tc)
+if not need_missing:
+    ok('obos_core.py 从 trading_calendar 导入全部 %d 个日历符号（AST 静态确认）' % len(NEED))
 else:
-    ok('obos_core.py 内不再硬编码假日表字面量')
+    bad('obos_core.py 未从 trading_calendar 导入：%s' % ', '.join(need_missing))
+
+if 'HOLIDAYS_2026 = [' in core_src or 'HOLIDAYS_2027 = [' in core_src:
+    bad('obos_core.py 里又出现了假日表字面量（应只在 trading_calendar.py 定义）')
+else:
+    ok('obos_core.py 内无假日表字面量')
+
+if re.search(r'^def\s+future_trade_dates\s*\(', core_src, re.M):
+    bad('obos_core.py 里又定义了 future_trade_dates —— 第二份实现复活')
+else:
+    ok('obos_core.py 无 future_trade_dates 的自有实现（无第二份）')
+
+# 动态断言（可选，需 numpy）：证明 re-export 的是**同一个对象**而非各自复制
+if os.environ.get('CAL_STATIC_ONLY') == '1':
+    print('  note  动态断言跳过（CAL_STATIC_ONLY=1，模拟 CI 无 numpy 环境）—— 静态段已覆盖同等契约')
+else:
+    try:
+        import obos_core as oc  # noqa: E402
+        if set(oc.HOLIDAYS) == set(tc.HOLIDAYS):
+            ok('动态：obos_core.HOLIDAYS == trading_calendar.HOLIDAYS（%d 个假日）' % len(tc.HOLIDAYS))
+        else:
+            bad('动态：两份假日表不一致：多 %s / 少 %s'
+                % (sorted(set(oc.HOLIDAYS) - set(tc.HOLIDAYS))[:3],
+                   sorted(set(tc.HOLIDAYS) - set(oc.HOLIDAYS))[:3]))
+        if oc.future_trade_dates is tc.future_trade_dates:
+            ok('动态：future_trade_dates 为同一函数对象（未各自复制实现）')
+        else:
+            bad('动态：obos_core.future_trade_dates 不是 trading_calendar 的同一个函数')
+        if oc.CAL_FULL_UNTIL == tc.CAL_FULL_UNTIL and oc.CAL_COVER_UNTIL == tc.CAL_COVER_UNTIL:
+            ok('动态：CAL_FULL_UNTIL=%s / CAL_COVER_UNTIL=%s 同源' % (oc.CAL_FULL_UNTIL, oc.CAL_COVER_UNTIL))
+        else:
+            bad('动态：日历覆盖常量不一致：%s vs %s' % (oc.CAL_FULL_UNTIL, tc.CAL_FULL_UNTIL))
+    except ImportError as e:
+        print('  note  动态断言跳过（%s）—— 属 CI 的预期路径，静态段已覆盖同等契约' % e)
 
 # ══════════════════════════════════════════════════════════════════════════
 print('== [3] 三处 CI 判据必须接到事实源 ==')
