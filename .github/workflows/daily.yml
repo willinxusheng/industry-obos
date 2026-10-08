@@ -96,6 +96,32 @@ jobs:
           REQUIRE_PYYAML: '1'
         run: python3 test_freshness_gate.py
 
+      # 交易日历唯一事实源 + 三处 CI 判据同源（[2026-10-08]）。
+      # 纯静态检查 + 日历算术，不取数不联网，故**无条件跑**且必须排在 Freshness gate 之前 ——
+      # 挂在 gate 之后的话，周末/节假日/"数据已最新"时会被一起 skip，
+      # 而恰恰是这些场景（长假）最需要它。
+      # 覆盖：长假反演（含 2026 国庆误报现场）+ 反例 + 三处判据接线 + 旧纯周末算术静态扫描
+      # （扫描器自带正控，扫不出来会自己判红）。
+      - name: Verify trading calendar (single source of truth)
+        run: python3 test_calendar.py
+
+      # 应到交易日 —— 全项目唯一事实源（trading_calendar.py）。
+      # [2026-10-08] 此前"本 workflow 的 Freshness gate"与"auto-close"各写了一份
+      #   "纯周末算术"，watchdog.yml 里还有第三份，三份都不含法定节假日。2026 国庆长假
+      #   （10-01~10-07 休市）实测三处同时误判：watchdog 误开 issue 并 28 次反复补跑、
+      #   gate 长假 7 天每天强制全量重建、auto-close 明明健康也关不掉告警（红标挂满 7 天）。
+      #   现统一到一个函数；以后补 HOLIDAYS_20XX 只改 trading_calendar.py 一处，三处同时生效。
+      - name: Resolve expected trading day (single source of truth)
+        id: cal
+        run: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::error::python3 不可用，无法计算应到交易日"; exit 1
+          fi
+          E=$(python3 trading_calendar.py)
+          if [ -z "$E" ]; then echo "::error::trading_calendar.py 未输出应到交易日"; exit 1; fi
+          echo "expected=$E" >> "$GITHUB_OUTPUT"
+          echo "应到的最新完整交易日（北京时间此刻）= $E"
+
       # 取数据源健康自检（放在 Freshness gate 之前：否则周末/数据已最新时会跟着一起 skip）
       # 回退源在主源正常时永不执行，是最容易腐烂的路径，且腐烂方式是静默的 ——
       # 实测新浪对申万行业代码返回 HTTP 200 + JSON null（不报错、看板照常"取数成功"），
@@ -165,20 +191,26 @@ jobs:
             echo "手动 force_rebuild=true（已避开盘中窗口）-> 强制重建产物"
             echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # 期望的最新「完整交易日」：
-          #   16:00 之后  -> 今天（当日收盘应已可取）
-          #   凌晨 00:00-09:30 -> 上一个工作日（此时今日尚未开盘，最新完整数据是昨天）
-          # 凌晨窗口的意义：若前一交易日傍晚的更新窗口因 GitHub 定时漂移而没命中，
-          #   凌晨这次会把上一个交易日的数据补上 —— 保证数据永不超过 1 天滞后。
-          if [ "$IS_WEEKEND" = "1" ]; then
-            # 周六-1=周五, 周日-2=周五
-            EXPECTED=$(date -u -d "+8 hours -$((DOW - 5)) days" +%Y-%m-%d)
-          elif [ "$tmin" -ge 960 ]; then
-            EXPECTED="$TODAY"
-          elif [ "$DOW" = "1" ]; then
-            EXPECTED=$(date -u -d "+8 hours -3 days" +%Y-%m-%d)   # 周一凌晨 -> 上周五
-          else
-            EXPECTED=$(date -u -d "+8 hours -1 day" +%Y-%m-%d)
+          # 期望的最新「完整交易日」：交由 trading_calendar.py 判定（全项目唯一事实源）。
+          # [2026-10-08] 原先这里是三段内联的"纯周末算术"（周六=今天-1 / 周一凌晨=今天-3 /
+          #   其余=昨天），**不含法定节假日**。2026 国庆长假（10-01~10-07 休市）实测后果：
+          #   长假 7 天里每天都把一个「不存在的交易日」当成应到值 -> 本 gate 从不 skip ->
+          #   每天强制全量重建（每天一条 daily refresh 提交），并发重建还撞出一次
+          #   rebase 冲突失败。现改为调用 trading_calendar.expected_asof()，与
+          #   auto-close、watchdog 同源（同一张假日表、同一个函数）。
+          # 语义（与旧算术只在节假日上不同）：
+          #   今天是交易日且已过 16:00(北京) -> 今天；否则 -> 上一个交易日。
+          #   凌晨窗口的补更语义不变：16:00 前一律回退，保证数据永不超过 1 天滞后。
+          if ! command -v python3 >/dev/null 2>&1; then
+            # 刻意不设"退回纯周末算术"的退路：那条退路正是本 bug 的成因，
+            # 宁可红着让人看见，也不静默给出一个节假日误判的应到值。
+            echo "::error::python3 不可用，无法计算应到交易日（纯周末算术退路已禁用：长假会误判）"
+            exit 1
+          fi
+          EXPECTED=$(python3 trading_calendar.py)
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::trading_calendar.py 未输出应到交易日"
+            exit 1
           fi
           echo "expected=$EXPECTED asof=$ASOF"
           # ── 源码改动必须重建产物 ─────────────────────────────────────────────
@@ -203,7 +235,7 @@ jobs:
             case "$BEFORE_SHA" in
               0000000000000000000000000000000000000000) ;;
               *) SRC_HIT=$(git diff --name-only "$BEFORE_SHA".."$AFTER_SHA" 2>/dev/null \
-                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|fetch_common\.py|test_render\.js|gate_edge_test\.js)$' || true) ;;
+                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|trading_calendar\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|fetch_common\.py|test_render\.js|gate_edge_test\.js)$' || true) ;;
             esac
             if [ -n "$SRC_HIT" ]; then
               echo "push 命中前端源码: $(printf '%s' "$SRC_HIT" | tr '\n' ' ')"
@@ -505,11 +537,15 @@ jobs:
       # 关闭判据刻意**不复用 steps.fresh.outputs.skip**：那个值区分不了
       #   「盘中铁律跳过（数据本来就该落后）」与「数据已最新而跳过（链路健康）」——
       #   两者都输出 skip=true。改为自判「线上产物 asof 是否已达应到交易日」，
-      #   用的是与 Freshness gate 完全同一套北京时间纯算术，两处口径不会分叉。
+      #   应到交易日取自 trading_calendar.py（与 Freshness gate、watchdog 同一事实源，
+      #   含法定节假日），三处口径不可能分叉。
       # 位置在 Alert 之前：一个负责关、一个负责开，读起来是一条完整的状态机。
       - name: Resolve stale alerts (auto-close when healthy)
         if: success()
         uses: actions/github-script@v8
+        env:
+          # 唯一事实源：由上面 "Resolve expected trading day" 步骤算好（含法定节假日）
+          EXPECTED_ASOF: ${{ steps.cal.outputs.expected }}
         with:
           script: |
             const fs = require('fs');
@@ -527,22 +563,17 @@ jobs:
               console.log('读不到 data.js: ' + e.message);
             }
 
-            // 应到交易日：与 Freshness gate 同一套纯算术（UTC+8，不依赖 tzdata）
-            const DAY = 86400000;
-            const bjMs = Date.now() + 8 * 3600 * 1000;
-            const bj = new Date(bjMs);
-            const today = bj.toISOString().slice(0, 10);
-            const tmin = bj.getUTCHours() * 60 + bj.getUTCMinutes();
-            const dow = bj.getUTCDay();          // 0=Sun .. 6=Sat
-            const dayBack = (n) => new Date(bjMs - n * DAY).toISOString().slice(0, 10);
-            let expected;
-            if (dow === 6) expected = dayBack(1);        // 周六 -> 周五
-            else if (dow === 0) expected = dayBack(2);   // 周日 -> 周五
-            else if (tmin >= 960) expected = today;      // 北京 16:00 后 -> 今天
-            else if (dow === 1) expected = dayBack(3);   // 周一凌晨 -> 上周五
-            else expected = dayBack(1);                  // 其余凌晨 -> 昨天
-            const hm = String(bj.getUTCHours()).padStart(2, '0') + ':' + String(bj.getUTCMinutes()).padStart(2, '0');
-            console.log(`auto-close 判定: asof=${asof || '缺失'} expected=${expected} 北京 ${today} ${hm}`);
+            // 应到交易日：由 trading_calendar.py 计算后经 env 注入（全项目唯一事实源）。
+            // [2026-10-08] 原先这里是内联的"纯周末算术"，不含法定节假日 ——
+            //   2026 国庆长假期间每一天都把"不存在的交易日"当成应到值，于是数据完全健康
+            //   （休市本就无新数据）也判不健康，告警从 10-01 一直挂到 10-08 才被关掉。
+            const expected = process.env.EXPECTED_ASOF || '';
+            const hm = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(11, 16);
+            console.log(`auto-close 判定: asof=${asof || '缺失'} expected=${expected || '未取到'} 北京 ${hm}`);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(expected)) {
+              console.log('应到交易日不可用（trading_calendar 步骤失败？）-> 保留告警，绝不误关');
+              return;
+            }
 
             if (!asof) { console.log('读不到产物 asof，无法判定健康 -> 保留告警'); return; }
             if (asof < expected) {

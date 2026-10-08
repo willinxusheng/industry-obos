@@ -17,7 +17,7 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
                        FC_MPI, FC_SEP, FWD, IC_REBAL,                        AnalogLib, COMBO_W, base_combo, base_combo_mkt,
                        regime_of, REGIME_CN,
                        expanding_quantile, future_trade_dates, ic_on_range, ma,
-                       make_score_pit, pct_rank_series, pit_weight_path,
+                       make_score_pit, missing_trade_days, pct_rank_series, pit_weight_path,
                        run_backtest, sub_indicators, walkforward_weights,
                        weights_from_ic)
 
@@ -198,8 +198,16 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     # 误判成滞后 1 天, 披露失真。统一按 UTC+8 取"今天"。
     _bj = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date()
     lag_days = (_bj - datetime.date.fromisoformat(bdates[-1])).days
-    if lag_days > 5:
-        issues.append("数据滞后 %d 天" % lag_days)
+    # [2026-10-08] 故障判据改用「缺失的交易日数」，不再用自然日差 —— 自然日差在长假
+    #   必然误报：2026 国庆休市 7 天，asof 合法地停在 09-30，自然日差一路涨到 6~8 天，
+    #   旧判据(lag_days > 5)会持续报"数据滞后 N 天"，而前端 qNote 会把它渲染成
+    #   "发现 1 项问题"，把"休市"说成"故障"。交易日口径下长假缺失数 = 0（没有交易日可缺）。
+    #   阈值 2 而非 1：交易日 16:00 后当天 K 线可能尚未发布（缺失 1 个属正常抖动）。
+    #   lag_days 字段本身保留自然日语义（前端"数据滞后 N 日"展示口径不变，数值真实）。
+    miss_td = missing_trade_days(bdates[-1], datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=8))))
+    if miss_td >= 2:
+        issues.append("连续缺失 %d 个交易日的数据（最后数据日 %s）" % (miss_td, bdates[-1]))
     # [日历过期预警] 预测窗口若超出交易日历覆盖年份，future_trade_dates 只会排除周末，
     # 真实节假日会被误当作交易日 -> 预测日期系统性错位。
     # 这里只追加 issue(=> WARN)，绝不 FAIL —— 绝不能因日历没及时更新而阻断每日更新。
@@ -262,6 +270,9 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         "nonpositive_close": zero_c, "negative_volume": zero_v,
         "unsorted_industries": unsorted,
         "lag_days": lag_days,
+        # [2026-10-08] 与 lag_days 并列披露：自然日差(展示口径) vs 缺失交易日数(故障口径)。
+        # 两者在长假会明显分叉（自然日 6~8 天 / 交易日 0 天），同时可见即可自证"休市≠漏更"。
+        "missing_trade_days": miss_td,
         "price_basis": "/".join(sorted(fq_keys)),
         "calendar_official_until": CAL_FULL_UNTIL,
         "calendar_cover_until": CAL_COVER_UNTIL,

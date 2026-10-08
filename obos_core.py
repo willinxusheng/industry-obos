@@ -411,50 +411,17 @@ def make_score_pit(rs, pos, bias, segs, n_t, smooth=True):
 
 
 # ==================== 交易日历 ([C1]) ====================
-# 国务院办公厅《关于2026年部分节假日安排的通知》; A股调休周末不开市
-HOLIDAYS_2026 = [
-    "2026-01-01", "2026-01-02", "2026-01-03",
-    "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19",
-    "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23",
-    "2026-04-04", "2026-04-05", "2026-04-06",
-    "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",
-    "2026-06-19", "2026-06-20", "2026-06-21",
-    "2026-09-25", "2026-09-26", "2026-09-27",
-    "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04",
-    "2026-10-05", "2026-10-06", "2026-10-07",
-]
-# 2027 安排未发布, 仅纳入法定固定段(元旦/劳动节/国庆), 覆盖度在 quality 中披露
-HOLIDAYS_2027 = ["2027-01-01",
-                 "2027-05-01", "2027-05-02", "2027-05-03", "2027-05-04", "2027-05-05",
-                 "2027-10-01", "2027-10-02", "2027-10-03", "2027-10-04",
-                 "2027-10-05", "2027-10-06", "2027-10-07"]
-HOLIDAYS = set(HOLIDAYS_2026) | set(HOLIDAYS_2027)
-CAL_FULL_UNTIL = "2026-12-31"
-
-
-def _cal_cover_until():
-    """日历「实际覆盖到」的年末，由 HOLIDAYS 推导。
-
-    刻意不另行硬编码：否则新增 HOLIDAYS_20XX 后若忘记同步这里，两个常量会漂移，
-    预警就会在错误的时间点触发（或永不触发）。
-    超出该年份后 future_trade_dates 只会排除周末，真实节假日会被误当作交易日。
-    """
-    if not HOLIDAYS:
-        return ""
-    return "%d-12-31" % max(int(h[:4]) for h in HOLIDAYS)
-
-
-CAL_COVER_UNTIL = _cal_cover_until()
-
-
-def future_trade_dates(last_date, n):
-    d = datetime.date.fromisoformat(last_date)
-    out = []
-    while len(out) < n:
-        d += datetime.timedelta(days=1)
-        if d.weekday() < 5 and d.isoformat() not in HOLIDAYS:
-            out.append(d.isoformat())
-    return out
+# [2026-10-08] 假日表与日历函数已迁至 trading_calendar.py —— 全项目唯一事实源。
+#   原因：CI 里三处「应到交易日」判据（daily.yml Freshness gate / daily.yml auto-close /
+#   watchdog.yml）各自复制了一份"纯周末算术"，都不含法定节假日。2026 国庆长假
+#   （10-01~10-07）实测三处同时误判：watchdog 误开 issue 并 28 次反复补跑、gate 每天
+#   强制全量重建（并发重建还撞出一次 rebase 冲突）、auto-close 健康也关不掉告警，
+#   红标挂满 7 天。抽成唯一事实源后，新增 HOLIDAYS_20XX 三处同时生效，不存在同步遗漏。
+#   此处 re-export 保持 API 不变（compute.py / backtest_deep.py 无需改动）。
+from trading_calendar import (CAL_COVER_UNTIL, CAL_FULL_UNTIL, HOLIDAYS,          # noqa: F401
+                              HOLIDAYS_2026, HOLIDAYS_2027, expected_asof,
+                              future_trade_dates, is_trade_day, missing_trade_days,
+                              next_trade_day, prev_trade_day)
 
 
 # ==================== 类比库 / 预测器 ([F1][F2][F3][F4]) ====================
