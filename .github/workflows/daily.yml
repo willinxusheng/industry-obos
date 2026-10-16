@@ -105,6 +105,16 @@ jobs:
       - name: Verify trading calendar (single source of truth)
         run: python3 test_calendar.py
 
+      # 产物 → CI 提交清单 完备性自检（[2026-10-16]）。
+      # daily.yml 用**显式清单**提交产物（不用 git add -A），代价是新增产物必须手工同步；
+      # 此前这句要求只写在注释里、没有任何机制保证它被执行 —— 而漏加的后果是静默的：
+      # 产物每天照常生成、看板照常能开，只有被漏掉的那个文件永远停在首次推送的版本
+      # （历史事故：sub_series.js / series.js 漏加 -> "表格是今天的、曲线是旧的"）。
+      # 同样纯静态（不读 data/、不联网、只用 stdlib），故**无条件跑**且必须排在
+      # Freshness gate 之前 —— 挂在后面会被周末/节假日/"数据已最新"一起 skip。
+      - name: Verify commit manifest completeness
+        run: python3 test_commit_manifest.py
+
       # 应到交易日 —— 全项目唯一事实源（trading_calendar.py）。
       # [2026-10-08] 此前"本 workflow 的 Freshness gate"与"auto-close"各写了一份
       #   "纯周末算术"，watchdog.yml 里还有第三份，三份都不含法定节假日。2026 国庆长假
