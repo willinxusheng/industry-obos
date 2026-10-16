@@ -138,9 +138,117 @@ if src.count(OLD_PAT) == 0:
 else:
     bad("源码中仍有 %d 处顺序依赖写法 %r" % (src.count(OLD_PAT), OLD_PAT))
 
+print("\n===== D 回退源截短历史不得被当成「口径真空期」放行 =====")
+# [2026-10-16] 行业链路 = 腾讯(主) -> 腾讯备用接入点 -> 东财。而东财 push2his 对申万
+#   行业代码的支持是【残缺】的: 实测 31 个一级行业只有 16 个能返回, 其中仅 5 个是完整
+#   1300 条, 其余短至 68 条(计算机)、88 条(建筑材料)。它返回的截短序列形态是
+#   "前段缺失 + 后段连续 + 有效段够长", 与二级管线合法的「指数口径真空期」
+#   【指纹同构】—— 从单份数据里分不出来。
+#   修复前故障注入实测: 1 个二级行业截短到 1227/1076/951/876 条时
+#     status=PASS / align_coverage=1.00000 / missing_cells=0 / issues=空,
+#   连 15 个行业同时截短也照样 PASS。即门禁会亲口宣布"完全对齐、没问题",
+#   而分数其实是基于短一截的 PIT 窗口算出来的 —— 典型的"算完、格式正常、数字是错的"。
+# 修复三件事:
+#   ① 真空期豁免叠加显式白名单 SUB_VACUUM_WHITELIST, 且首个有效日须与登记值一致;
+#   ② 形态像真空期但未登记 -> 直接 fatal。不能靠 cover>0.999 的容差落进 WARN ——
+#      该容差随行业数放大: 一级 31 个 -> 缺<=40 天放行, 二级 109 个 -> 缺<=141 天放行,
+#      而东财最轻的残缺恰是 73 天, 正好落在二级的容差里(修复前 C1227 仅 WARN)。
+#   ③ 空序列不得让门禁崩溃(原实现无条件 ds[0], 15 个行业全空时抛 IndexError)。
+import datetime as _dt  # noqa: E402
+
+import compute  # noqa: E402
+import trading_calendar as tc  # noqa: E402
+
+N_D = 1300
+_end = tc.expected_asof()                      # 返回 datetime.date
+_D = _end if isinstance(_end, _dt.date) else _dt.date.fromisoformat(str(_end))
+_ds = []
+for _ in range(N_D):
+    _ds.append(_D.isoformat())
+    _D = tc.prev_trade_day(_D)
+bdates = list(reversed(_ds))
+bclose = [3000.0 + i for i in range(N_D)]
+print("  合成基准: %d 个真实交易日 %s ~ %s" % (len(bdates), bdates[0], bdates[-1]))
+
+
+def _mk(n_ind, cut_map, vac_mode=None):
+    """vac_mode: None=不含白名单行业 / 'legal'=按登记起点 / 'shorter'=被截得更短。
+    不足 n_ind 个时返回 None(调用方跳过)，保证用例不会因时间推移而自坏。"""
+    raw = {}
+    n_plain = n_ind - 1 if vac_mode else n_ind
+    for i in range(n_plain):
+        k = cut_map.get(i, 0)
+        rows = [[d, 1000.0 + i + j, 1005.0 + i + j, 1008.0 + i + j, 997.0 + i + j, 1.0e7]
+                for j, d in enumerate(bdates[k:])]
+        raw["pt01%06d" % (801000 + i * 10)] = {"name": "合成%03d" % (i + 1),
+                                               "fq_key": "day", "rows": rows}
+    if vac_mode:
+        wl = compute.SUB_VACUUM_WHITELIST.get("pt01801179")
+        if not wl or wl["from"] not in bdates:
+            return None
+        k = bdates.index(wl["from"]) + (100 if vac_mode == "shorter" else 0)
+        rows = [[d, 2000.0 + j, 2005.0 + j, 2008.0 + j, 1997.0 + j, 1.0e7]
+                for j, d in enumerate(bdates[k:])]
+        raw["pt01801179"] = {"name": "铁路公路", "fq_key": "day", "rows": rows}
+    return raw
+
+
+def _g(raw, n_ind, relax):
+    return compute.quality_gate(raw, bdates, bclose, expect_n=n_ind,
+                                relax_prefix_vacuum=relax)
+
+
+def _check(label, raw, n_ind, relax, expect):
+    if raw is None:
+        print("  SKIP  %s (合成基准已不含白名单登记日, 用例自动跳过)" % label)
+        return
+    try:
+        r = _g(raw, n_ind, relax)
+    except Exception as e:
+        bad("%s: 门禁抛异常 %s: %s" % (label, type(e).__name__, str(e)[:50]))
+        return
+    got = r["status"]
+    if got == expect:
+        ok("%s -> %s" % (label, got))
+    else:
+        bad("%s -> %s (期望 %s; cover=%.5f miss=%d issues=%s)"
+            % (label, got, expect, r["align_coverage"], r["missing_cells"],
+               r["issues"][:1]))
+
+
+# 反向对照: 必须 PASS, 否则下面"截短被拦"可能只是"恒 FAIL"
+_check("D0 反向对照 31 个一级全对齐", _mk(31, {}), 31, False, "PASS")
+_check("D1 1 个一级缺 41 天(边界外)", _mk(31, {0: 41}), 31, False, "FAIL")
+_check("D2 反向对照 109 个二级全对齐", _mk(109, {}, vac_mode="legal"), 109, True, "PASS")
+# 修复前这四种截短在二级模式下全部 PASS(被记成真空期)
+for _label, _k in (("1227", 73), ("1076", 224), ("951", 349), ("876", 424)):
+    _check("D3 二级截短到 %s 条(缺%d天)" % (_label, _k),
+           _mk(109, {0: _k}, vac_mode="legal"), 109, True, "FAIL")
+_check("D4 15 个二级同时截短到 1227 条",
+       _mk(109, {i: 73 for i in range(15)}, vac_mode="legal"), 109, True, "FAIL")
+# 白名单正向: 合法口径真空期必须仍被豁免(修复不能把这条件正常路径一起堵死)
+_check("D5 白名单行业 合法真空期(须豁免)", _mk(109, {}, vac_mode="legal"), 109, True, "PASS")
+# 白名单反向: 同一行业被截得更短, 首个有效日与登记值不符 -> 必须 FAIL
+_check("D6 白名单行业 被截更短(须 FAIL)",
+       _mk(109, {}, vac_mode="shorter"), 109, True, "FAIL")
+# 空序列: 必须给出 FAIL 结论, 而不是抛 IndexError 让门禁崩掉
+try:
+    _empty = _mk(31, {})
+    for _c in list(_empty)[:15]:
+        _empty[_c]["rows"] = []
+    _r = _g(_empty, 31, False)
+    if _r["status"] == "FAIL" and _r.get("empty_series") == 15:
+        ok("D7 15 个行业空序列 -> FAIL(empty_series=15)，门禁未崩溃")
+    else:
+        bad("D7 空序列 -> status=%s empty_series=%s (期望 FAIL/15)"
+            % (_r["status"], _r.get("empty_series")))
+except Exception as e:
+    bad("D7 空序列让门禁崩溃: %s: %s" % (type(e).__name__, str(e)[:60]))
+
 print()
 if fail == 0:
-    print("PIT INVARIANTS TEST PASSED：无前视泄漏 / 非有限值不入秩 / 分位区间不退化")
+    print("PIT INVARIANTS TEST PASSED：无前视泄漏 / 非有限值不入秩 / 分位区间不退化 / "
+          "回退源截短不得冒充口径真空期")
 else:
     print("PIT INVARIANTS TEST FAILED：%d 项" % fail)
 sys.exit(1 if fail else 0)

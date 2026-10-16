@@ -23,6 +23,8 @@ import ssl
 import time
 import urllib.request
 
+from collections import Counter
+
 from fetch_common import atomic_write_json, drop_unsettled_tail, is_rows_finite
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -143,7 +145,7 @@ SOURCES = [
 
 
 def fetch_rows(sw):
-    """按 SOURCES 顺序尝试，返回 (rows, src_name)；全失败抛 RuntimeError。"""
+    """按 SOURCES 顺序尝试，返回 (rows, src_name, fq)；全失败抛 RuntimeError。"""
     errs = []
     for name, fn in SOURCES:
         try:
@@ -162,6 +164,34 @@ def fetch_rows(sw):
         except Exception as e:
             errs.append("%s:%s" % (name, str(e)[:60]))
     raise RuntimeError("; ".join(errs))
+
+
+def start_outliers(out):
+    """找出历史起点明显晚于【本批行业共识起点】的行业。
+
+    [2026-10-16] 为什么不在 fetch_rows 里用"基准起点"当锚拦截：
+      实测 data/benchmark.json 这份入库快照起于 2021-04-19，而现取口径的行业与基准
+      都起于 2021-06-04 —— 拿快照当锚会把 31 个行业【全部误拒】。锚依赖外部文件的
+      新鲜度，本身就是个新的失败源。
+      而"起点共识"不需要任何外部输入：实测 31 个申万一级指数全部起于同一天，
+      谁比大家晚一截，谁就是被回退源截短了。
+      (二级不能用同一判据的"晚于"方向去否定：pt01801179 铁路公路起于 2013-09-17，
+      是【更早】，不在本函数的射程内。)
+
+    本函数只【报告】，不改变取数结果与流程 —— 拦截交给 compute.quality_gate
+    (一级缺 41 个交易日即 FAIL；二级另有 SUB_VACUUM_WHITELIST 机制)，
+    这里负责把"是哪个行业、哪个源、晚了多久"写进 CI 日志，省掉一次人肉排查。
+    """
+    info = {}
+    for code, v in out.items():
+        rows = v.get("rows") or []
+        if rows:
+            info[code] = (v.get("name"), v.get("src"), rows[0][0], len(rows))
+    if len(info) < 3:
+        return []
+    common = Counter(s[2] for s in info.values()).most_common(1)[0][0]
+    return sorted((code, nm, src, st, n) for code, (nm, src, st, n) in info.items()
+                  if st > common), common
 
 
 def main():
@@ -191,6 +221,14 @@ def main():
     print("saved:", len(out), "->", path, flush=True)
     srcset = sorted({v.get("src") for v in out.values()})
     print("sources used:", srcset, flush=True)
+    # [2026-10-16] 起点异常点名：回退源一旦换了口径，最直观的指纹就是"历史被截短"。
+    # 不拦截(拦截由 compute.quality_gate 负责)，只把诊断信息推进 CI 日志。
+    outliers, common = start_outliers(out)
+    print("common start date:", common, flush=True)
+    if outliers:
+        for code, nm, src, st, n in outliers:
+            print("⚠️ START-OUTLIER %s %s src=%s 起=%s rows=%d (晚于共识起点 %s)"
+                  % (code, nm, src, st, n, common), flush=True)
     if fail:
         print("FAILED:", json.dumps(fail, ensure_ascii=False), flush=True)
 

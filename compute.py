@@ -132,6 +132,27 @@ def append_metrics_log(asof, out):
 
 
 # ---------------- 数据质量门禁 ----------------
+# [2026-10-16] 二级管线「指数口径真空期」显式白名单。
+#   背景: compute.quality_gate 在二级模式(relax_prefix_vacuum=True)下会豁免"前段缺失"
+#   形态, 原判据纯看形态。而东方财富 push2his 对申万行业代码支持残缺, 31 个一级行业里
+#   15 个返回 EMPTY, 能返回的 16 个里只有 5 个是完整 1300 条(其余短至 68 条) ——
+#   它吐出的截短序列与「指数改版真空期」指纹【同构】, 故障注入实测可让门禁在
+#   cover=1.00000 / issues=空 的情况下放行缺 424 个交易日的行业。
+#   故改为显式登记: 只有列在这里、且实际起点与登记值完全一致的行业才允许豁免。
+#   新增条目的流程 = 先看到 FAIL(门禁会点名该行业起点晚于基准) -> 人工核实它确实是
+#   指数编制口径变更所致(而非取数/回退源问题) -> 再把 (代码, 端点日期) 登记进来。
+#   ⚠️ 别为了"让 CI 变绿"而往这里加东西 —— 那正是本白名单要防的事。
+SUB_VACUUM_WHITELIST = {
+    # 铁路公路: 申万 2021 版行业分类自 2021-12-13 起按现口径每日发布, 此前无数据。
+    # 该行业在二级链路(109 个)中, 一级链路不存在此码。
+    # "from" = 该行业在【基准日期范围内】的首个有效交易日(等价于产物里的 valid_from)。
+    #   不要写成整条 K 线序列的起点 —— 腾讯按条数取 1300 条时会把 2013~2014 的老指数
+    #   尾巴一并带回来, 整条序列起点是 2013-09-17, 两者不是一回事。
+    "pt01801179": {"from": "2021-12-13",
+                   "note": "申万2021版口径自 2021-12-13 生效, 此前无该指数日线"},
+}
+
+
 def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     issues = []
     n_ind = len(raw)
@@ -152,8 +173,14 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     flat_last = 0
     flat_last_codes = []
     spans = []
+    # [2026-10-16] 空序列计数。见下方 spans 处的说明：本函数是质量判定的最后一道，
+    #   对"某来源返回空/极短序列"必须给出结论(FAIL)，不能自己先抛 IndexError。
+    empty_series = 0
+    empty_codes = []
     fq_keys = set()
     vacuum = {}  # [2026-09-03 二级模式] 指数口径真空期: 缺失全部集中在"连续有效段起点"之前
+    # [2026-10-16] 形态像真空期但不在白名单的行业(见下方判据) —— 单独收集以便点名披露。
+    vacuum_rejected = []
     for code, v in raw.items():
         fq_keys.add(v.get("fq_key") or "unknown")
         rows = v["rows"]
@@ -175,12 +202,42 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
             # 缺失是"指数尚未按现口径每日发布"的历史真空(如 801179 铁路公路, 申万2021版
             # 2021-12-13 生效), 非取数故障. 真空期不计入 miss(指标/回测对 None 天然兼容),
             # 单独如实披露. 中间有洞或近期缺失仍按真实缺失处理.
+            #
+            # [2026-10-16] 重大修正: 形态判据不够, 必须叠加【显式白名单】。
+            #   故障注入实测(见 /tmp 复算, 结论已写入 test_pit_invariants.py):
+            #     · 一级模式(relax=False) 1 个行业缺 41 个交易日即 FAIL —— 兜得住。
+            #     · 二级模式(relax=True) 1 个行业截短到 1227/1076/951/876 条时
+            #       status=PASS / cover=1.00000 / miss=0 / issues=空, 缺失被原样
+            #       记成"合法真空期"; 连 15 个行业同时截短也照样 PASS。
+            #   为什么形态判据分不开: 东方财富 push2his 对申万代码支持残缺, 返回的
+            #   恰好是"前段缺失、后段连续、有效段够长"的截短序列 —— 与指数口径真空期
+            #   【指纹同构】。而本项目行业链路是"腾讯(主) → 腾讯备用接入点 → 东财"
+            #   三源回退: 腾讯一旦故障, 回退到的正是这种序列, 门禁会亲口宣布
+            #   "完全对齐、无问题", 于是基于短一截的 PIT 窗口算出的分数被发布上线。
+            #   区分两者的唯一可靠证据是【它是不是本来就晚】—— 这是先验事实, 不是
+            #   能从单份数据里推断出来的形态。故改为白名单: 合法真空期必须显式登记,
+            #   白名单外的晚起点一律按取数故障处理(FAIL), 由人工确认后再登记。
+            #   显式优于隐式: 宁可让人看一眼, 也不要让看板悄悄说谎。
+            wl = SUB_VACUUM_WHITELIST.get(code)
             has = [d in cmap for d in bdates]
             last_miss_idx = max(i for i, h in enumerate(has) if not h)
-            if all(has[last_miss_idx + 1:]) and (n_dt - last_miss_idx - 1) >= int(n_dt * 0.6):
+            shape_ok = (all(has[last_miss_idx + 1:])
+                        and (n_dt - last_miss_idx - 1) >= int(n_dt * 0.6))
+            # ⚠️ 登记值比对必须用「基准范围内的首个有效交易日」，不是该行业整条序列的
+            #   起点 ds[0] —— 两者常不相等。实测 pt01801179 的 1300 条是
+            #   「2013-09-17~2014-04-10 的老指数尾巴(134 条) + 断档 2804 天 +
+            #     2021-12-13 起新口径(1166 条)」, ds[0] 是 2013-09-17, 而它在基准
+            #   范围内的首个有效日才是 2021-12-13。用 ds[0] 比对会让真实生产数据
+            #   永远不匹配 -> 把合法的真空期行业打成 FAIL -> CI 全红。
+            valid_from = bdates[last_miss_idx + 1] if last_miss_idx + 1 < n_dt else None
+            if wl and valid_from == wl["from"] and shape_ok:
                 vacuum[code] = {"name": v.get("name"), "cells": n_miss_code,
-                                "valid_from": bdates[last_miss_idx + 1]}
+                                "valid_from": valid_from}
                 n_miss_code = 0
+            elif shape_ok and ds:
+                # 形态像真空期, 但未登记白名单(或首个有效日与登记值不符) —— 这正是
+                # "回退源截短历史"的指纹。不豁免, 如实计入 miss, 并在 issues 里点名。
+                vacuum_rejected.append((v.get("name") or code, valid_from))
         miss += n_miss_code
         if bdates[-1] not in cmap:
             miss_last += 1
@@ -190,13 +247,29 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         zero_v += sum(1 for r in rows if r[5] is None or r[5] < 0)
         if ds != sorted(ds):
             unsorted += 1
-        spans.append((ds[0], ds[-1], len(ds)))
+        # [2026-10-16] 空序列防护 + 起点极差披露。
+        #   原实现无条件 spans.append((ds[0], ds[-1], len(ds)))，遇上空 rows 直接
+        #   IndexError —— 故障注入(15 个行业全空，即东财对申万代码大面积返回 EMPTY 的
+        #   形态)实测让门禁【崩溃】而不是给出 FAIL。现实中 fetch 层用 len<1000 拦住了
+        #   这条路，但那是"靠上游"；本函数是质量判定的最后一道，不能自己先炸。
+        #   同时 spans 原先是只写不读的死变量 —— 这里让它真正参与产出(起点极差)，
+        #   因为"某个行业的历史起点比别人晚几个月"正是回退源污染的指纹。
+        if ds:
+            spans.append((ds[0], ds[-1], len(ds)))
+        else:
+            empty_series += 1
+            empty_codes.append(v.get("name") or code)
     if len(bdates) != len(bset):
         issues.append("基准日期存在重复")
     if bdates != sorted(bdates):
         issues.append("基准日期未升序")
     if miss:
         issues.append("行业与基准日期对齐缺失 %d 个单元" % miss)
+    if vacuum_rejected:
+        issues.append("疑似取数回退源截短历史(缺失集中于前段、形态像口径真空期但未登记)：%s "
+                      "—— 若确属指数编制口径变更，请把该行业登记进 compute.SUB_VACUUM_WHITELIST；"
+                      "否则视为取数故障，不要绕过"
+                      % "、".join("%s(起%s)" % t for t in sorted(vacuum_rejected)[:6]))
     if dup:
         issues.append("行业K线存在重复日期 %d 条" % dup)
     if zero_c:
@@ -205,6 +278,10 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
         issues.append("%d 个行业K线未按日期升序" % unsorted)
     if n_ind != expect_n:
         issues.append("行业数 %d != %d" % (n_ind, expect_n))
+    if empty_series:
+        issues.append("空K线序列的行业 %d 个: %s"
+                      % (empty_series, "、".join(sorted(empty_codes)[:8])
+                         + ("等" if empty_series > 8 else "")))
     # [2026-09-04] lag 判定必须用北京时间: GitHub Actions runner 是 UTC, 若用 date.today()
     # (进程本地时区), 在北京 23:00-次日 08:00 (UTC 15:00-24:00) 运行的 CI 会把"今日收盘"
     # 误判成滞后 1 天, 披露失真。统一按 UTC+8 取"今天"。
@@ -284,10 +361,26 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     #   asof 会变成当天, freshness gate 误判"已最新"而停止重试, 平线挂一整天。
     fatal = bool(dup or zero_c or unsorted or n_ind != expect_n or bad_fq
                  or (miss_last and miss_last == n_ind)
-                 or flat_last * 2 > n_ind)
+                 or flat_last * 2 > n_ind
+                 or empty_series
+                 # [2026-10-16] "形态像口径真空期但未登记"不是"数据脏了一点"，而是
+                 #   "很可能已回退到残缺源"。它必须 FAIL，不能只靠 cover>0.999 的容差
+                 #   落进 WARN —— 该容差随行业数放大: 一级 31 个 -> 缺<=40 天放行,
+                 #   二级 109 个 -> 缺<=141 天放行, 而东财实测最轻的残缺恰是 73 天,
+                 #   正好落在二级的容差里(修复前实测 C1227 仅 WARN)。
+                 or bool(vacuum_rejected))
+    # [2026-10-16] 各行业历史起点的极差。回退源污染(某源只返回近几个月的K线)会让
+    #   少数行业的起点晚别人几个月, 而 n_dates / span 都取自【基准】, 看不出来 ——
+    #   这个字段是那条路径唯一的可见指纹。仅披露, 不设阈值判据: 二级管线的
+    #   指数口径真空期(如 801179 铁路公路 2021-12-13 才按现口径发布)属合法晚起点，
+    #   一刀切 FAIL 会误伤, 故交由 prefix_vacuum / missing_cells 各自表述。
+    span_start_min = min(s[0] for s in spans) if spans else None
+    span_start_max = max(s[0] for s in spans) if spans else None
     return {
         "n_industries": n_ind, "n_dates": n_dt,
         "span": [bdates[0], bdates[-1]],
+        "span_start_min": span_start_min, "span_start_max": span_start_max,
+        "empty_series": empty_series,
         "align_coverage": round(cover, 5),
         "missing_cells": miss, "dup_dates": dup,
         "missing_last_day": miss_last,
