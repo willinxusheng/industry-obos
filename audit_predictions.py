@@ -163,6 +163,13 @@ def main():
     #   若按方向样本数 n 去除, 分母口径与累加口径不同(方向要 |变动|>=1, Brier 不要),
     #   算出来是错的。故分区间改为分别计数: [dir_ok, dir_n, brier_sum, brier_n]。
     by_regime = {}
+    # [2026-10-16] 按主推演方法分组。为什么需要：obos_core [C4] 的 DM 门控会自动切换
+    #   主推演（线上实测 6 周内切了 3~6 次 combo ↔ combo_mkt），而两法指标天生差一截
+    #   （方向 0.665 vs 0.675、MAE 15.91 vs 16.78）。不分组的话，一旦复核出问题，
+    #   看到的只是一团混合平均数，无法归因到具体方法。
+    #   字段自 2026-10-16 起才写入，故旧行一律归入「未标注」—— 这是**预期状态**，
+    #   不得据此判契约破损（本脚本的 1 号退出码只留给真正的坏 JSON/长度错位）。
+    by_method = {}
     for r, real in mature:
         s = r.get("s")
         if s is None or real is None:
@@ -194,6 +201,14 @@ def main():
         if pup is not None:
             st[2] += (pup - (1 if real > s else 0)) ** 2
             st[3] += 1
+        mk = r.get("main") or "未标注"
+        mt = by_method.setdefault(mk, [0, 0, 0.0, 0])
+        if directed:
+            mt[1] += 1
+            mt[0] += 1 if (med - s) * (real - s) > 0 else 0
+        if pup is not None:
+            mt[2] += (pup - (1 if real > s else 0)) ** 2
+            mt[3] += 1
     print("\n===== 预测快照复核(成熟 %d 行, 期限 %d 交易日) =====" % (len(mature), HORIZON))
     if dir_n:
         print("方向命中(%dd): %.1f%% (%d/%d)  [全样本口径]"
@@ -220,6 +235,18 @@ def main():
         if bn:
             msg += (" | " if n else "") + "Brier %.4f (n=%d)" % (brs / bn, bn)
         print(msg)
+    if by_method:
+        print("\n分主推演方法(2026-10-16 起记录; 此前为「未标注」):")
+        for mk in sorted(by_method, key=lambda k: -sum(by_method[k][1::2])):
+            ok, n, brs, bn = by_method[mk]
+            if n == 0 and bn == 0:
+                continue
+            msg = "  %-10s: " % mk
+            if n:
+                msg += "方向 %.1f%% (%d/%d)" % (100.0 * ok / n, ok, n)
+            if bn:
+                msg += (" | " if n else "") + "Brier %.4f (n=%d)" % (brs / bn, bn)
+            print(msg)
     return 0
 
 

@@ -421,7 +421,7 @@ def make_score_pit(rs, pos, bias, segs, n_t, smooth=True):
 from trading_calendar import (CAL_COVER_UNTIL, CAL_FULL_UNTIL, HOLIDAYS,          # noqa: F401
                               HOLIDAYS_2026, HOLIDAYS_2027, expected_asof,
                               future_trade_dates, is_trade_day, missing_trade_days,
-                              next_trade_day, prev_trade_day)
+                              next_trade_day, official_coverage_lead, prev_trade_day)
 
 
 # ==================== 类比库 / 预测器 ([F1][F2][F3][F4]) ====================

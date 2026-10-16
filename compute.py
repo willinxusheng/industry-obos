@@ -17,7 +17,8 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
                        FC_MPI, FC_SEP, FWD, IC_REBAL,                        AnalogLib, COMBO_W, base_combo, base_combo_mkt,
                        regime_of, REGIME_CN,
                        expanding_quantile, future_trade_dates, ic_on_range, ma,
-                       make_score_pit, missing_trade_days, pct_rank_series, pit_weight_path,
+                       make_score_pit, missing_trade_days, official_coverage_lead,
+                       pct_rank_series, pit_weight_path,
                        run_backtest, sub_indicators, walkforward_weights,
                        weights_from_ic)
 
@@ -38,8 +39,19 @@ PRED_LOG = os.path.join(BASE, "data", "prediction_log.jsonl")
 MET_LOG = os.path.join(BASE, "data", "model_metrics_log.jsonl")
 
 
-def append_prediction_log(asof, industries):
-    """按 asof 幂等追加预测快照行(JSON Lines). 只对主模式(31 一级行业)启用."""
+def append_prediction_log(asof, industries, main=None):
+    """按 asof 幂等追加预测快照行(JSON Lines). 只对主模式(31 一级行业)启用.
+
+    [2026-10-16] 新增 `main` 字段 = 本行预测**由哪套主推演方法产生**。
+    为什么必须记（时间敏感，错过就永久丢失）：
+      obos_core [C4] 的 DM 门控会自动切换主推演，线上实测 6 周内切了 3~6 次
+      （combo ↔ combo_mkt）。而两法的指标天生差一截（方向 0.665 vs 0.675、
+      MAE 15.91 vs 16.78），所以"这批预测准不准"若不知道用的哪套方法，
+      复核出问题也无法归因，只能看到一团混合平均数。首批快照 2026-09-04 建档、
+      30 交易日后成熟（约 2026-10 下旬）—— **过期再补就只能永远缺这一段**。
+      与 model_metrics_log 的 `main` 字段对齐（那边早就有，这边漏了）。
+      旧行没有该字段，读取方必须容忍（按"未标注"分组），不得因此判契约破损。
+    """
     if os.path.exists(PRED_LOG):
         with open(PRED_LOG, encoding="utf-8") as f:
             for line in f:
@@ -66,7 +78,7 @@ def append_prediction_log(asof, industries):
         if not md or not lo or not hi:
             continue
         lines.append(json.dumps({
-            "asof": asof, "code": ind["code"], "name": ind.get("name"),
+            "asof": asof, "main": main, "code": ind["code"], "name": ind.get("name"),
             "s": ind.get("cur_score"), "state": ind.get("state"),
             "med": round(float(md[-1]), 2),
             "lo": round(float(lo[-1]), 2),
@@ -227,7 +239,21 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     if fc_last and fc_last > CAL_FULL_UNTIL:
         issues.append("预测窗口(%s)超出官方日历完整覆盖(%s)：此后年份仅含元旦/劳动节/国庆固定段，"
                       "春节/清明/端午/中秋会被当作交易日，预测日期系统性错位，"
-                      "请补充 obos_core.HOLIDAYS_20XX 表" % (fc_last, CAL_FULL_UNTIL))
+                      "请补全 trading_calendar.py 的 HOLIDAYS_BY_YEAR 表" % (fc_last, CAL_FULL_UNTIL))
+    # [2026-10-16] 与上面那条互补，且**互斥**（同一件事不能计两次，否则"发现 2 项问题"会虚高）：
+    #   上面判的是「交付的预测日期是否会错位」—— 依赖 HORIZON 长度，是间接代理；
+    #   这里判的是「CI 判据拿"今天"去比假日表会不会错」—— 与致灾路径一一对应的直接判据。
+    #   2027 春节（2 月）就是活例子：那时 fc_last 还不一定越界，但 CI 已经开始把
+    #   02-08~02-12 这些不存在的交易日当成"应到值"，重演 2026 国庆的误报/重建/红标。
+    #   注：文案里刻意写出"改哪个文件"—— 假日表从 obos_core 迁到 trading_calendar.py 后，
+    #   旧文案仍指 obos_core.HOLIDAYS_20XX，照着改会改错地方（本轮修复即此）。
+    _lead = official_coverage_lead()
+    if _lead < 0:
+        issues.append("交易日历官方覆盖已于 %s 到期(距今 %d 天)：此后只能判周末，"
+                      "春节/清明/端午/中秋会被当作交易日，CI 会把不存在的交易日当成应到值 -> "
+                      "误报漏更并反复补跑(2026 国庆同类故障)。请补全 trading_calendar.py 的 "
+                      "HOLIDAYS_BY_YEAR[%d] 并把 official 置为 True"
+                      % (CAL_FULL_UNTIL, -_lead, int(CAL_FULL_UNTIL[:4]) + 1))
     # [A5] 复权口径断言: 复权序列会随未来除权事件整体重算历史 -> 历史指标不可复现(违背 PIT)
     bad_fq = sorted(k for k in fq_keys if k not in ("day", "unknown"))
     if bad_fq:
@@ -1005,7 +1031,7 @@ def main(sub_mode=False):
         json.dump(out, f, ensure_ascii=False)
 
     if not sub_mode:
-        append_prediction_log(asof, industries)
+        append_prediction_log(asof, industries, MAIN)
         append_metrics_log(asof, out)
     print("market(%s): score=%s lines ob/os/hot/cold=%s/%s/%s/%s state=%s regime=%s"
           % (market["name"], market["cur_score"], market["ob_line"], market["os_line"],

@@ -16,7 +16,7 @@
   根因不是某处写错，而是**同一口径被复制了三份**。修复 = 抽成 trading_calendar.py
   单一事实源，三处统一调用。本门禁把事故现场固化成断言。
 
-本门禁的四类断言：
+本门禁的五类断言：
   [1] 日历函数契约：长假必须回退到节前最后一个交易日（事故时点逐个反演）；
      反例：交易日 16:00 之后必须是当天（防止有人"为避免误报"改成永远回退）。
   [2] 单一事实源：obos_core 不得再自带一份假日表，必须与 trading_calendar 同源。
@@ -24,6 +24,9 @@
      github-script（JS 侧不许再自己算）。
   [4] 静态扫描：workflow 里不得再出现旧的纯周末算术字面量。
      ⚠️ 扫描器自带**正控**：把旧代码样本喂给它必须命中，否则"扫不出来"会被当成"没问题"。
+  [5] 覆盖度守卫（[2026-10-16]）：官方假日安排到期前必须主动响 —— 否则 2027 春节会
+     重演 2026 国庆的**同一失效模式**（换了个日期而已）。同样自带正控：
+     用合成 lead 验边界，不必等到真过期才知道守卫会不会红。
 """
 import io
 import os
@@ -188,7 +191,7 @@ for node in ast.walk(core_tree):
 
 NEED = {'HOLIDAYS', 'HOLIDAYS_2026', 'HOLIDAYS_2027', 'CAL_FULL_UNTIL', 'CAL_COVER_UNTIL',
         'expected_asof', 'future_trade_dates', 'is_trade_day', 'missing_trade_days',
-        'next_trade_day', 'prev_trade_day'}
+        'next_trade_day', 'official_coverage_lead', 'prev_trade_day'}
 need_missing = sorted(NEED - imported_from_tc)
 if not need_missing:
     ok('obos_core.py 从 trading_calendar 导入全部 %d 个日历符号（AST 静态确认）' % len(NEED))
@@ -304,6 +307,63 @@ for name, txt in (('daily.yml', daily), ('watchdog.yml', watch)):
         bad('%s 又出现旧的纯周末算术：%s' % (name, '、'.join(hits)))
     else:
         ok('%s 无旧算术残留' % name)
+
+# ══════════════════════════════════════════════════════════════════════════
+print('== [5] 日历覆盖度守卫：官方安排到期后必须响 ==')
+# 为什么需要这一段（2026-10-16 新增）：
+#   CAL_FULL_UNTIL 之后，is_trade_day 退化成"只看周末" —— 春节/清明/端午/中秋会被当成
+#   交易日。这正是 2026 国庆事故的**同一失效模式换个日期**：2027 春节（02-06）未收录，
+#   现行实现判定 2027-02-08~02-12 是交易日，届时三处 CI 判据会再次把不存在的交易日当
+#   "应到值"，重演「误开 issue + 反复补跑 + 长假每天强制全量重建 + 红标连挂」。
+#   此前唯一的提醒是 compute.py 追加进 `issues`（**仅 WARN**）并在前端展示，而它判的是
+#   "**预测窗口**是否越界"（间接代理，依赖 HORIZON 长度）；WARN 不阻断 CI，等于没有。
+#
+# 判据用 expected_asof()，即 CI 实际拿来比的那个"今天" —— 不是 calendar.today()。
+
+
+def coverage_verdict(lead):
+    """把 lead（距官方覆盖期末的自然日数）映射为判定档位。
+
+    刻意抽成纯函数：只有这样才能用**合成 lead** 做正控（见下），
+    而不必等到 2027 年真过期才验证"这道守卫会不会红"。
+    """
+    if lead < 0:
+        return 'FAIL'
+    if lead <= 60:
+        return 'WARN'
+    return 'OK'
+
+
+# 正控：守卫必须能红。三个边界各测一次，否则"永远 OK"会被当成"没问题"。
+_vc = [(-1, 'FAIL', '已过期'), (0, 'WARN', '到期当天'), (60, 'WARN', '预警窗下沿'),
+       (61, 'OK', '刚出预警窗'), (365, 'OK', '覆盖充足')]
+_vc_bad = [(l, w, coverage_verdict(l)) for l, w, _why in _vc if coverage_verdict(l) != w]
+if not _vc_bad:
+    ok('守卫生效性正控：5 个边界档位全部判定正确（过期必 FAIL、60 天内必 WARN）')
+else:
+    bad('覆盖度守卫正控失败：%s —— 守卫失效，本段等于没跑' % _vc_bad)
+
+LEAD = tc.official_coverage_lead()
+_verdict = coverage_verdict(LEAD)
+if _verdict == 'FAIL':
+    bad('交易日历官方覆盖已于 %s 到期（lead=%d 天）：此后 is_trade_day 只能判周末，'
+        '春节/清明/端午/中秋会被当成交易日 -> 三处 CI 判据把不存在的交易日当应到值，'
+        '重演 2026 国庆故障（误报 issue + 反复补跑 + 强制重建 + 红标）。'
+        '请补全 trading_calendar.py 的 HOLIDAYS_BY_YEAR[%d]，并把该年 official 置为 True'
+        % (tc.CAL_FULL_UNTIL, LEAD, int(tc.CAL_FULL_UNTIL[:4]) + 1))
+elif _verdict == 'WARN':
+    ok('覆盖度预警：距官方日历到期(%s)仅 %d 天 —— 请在国务院发布次年安排后补表'
+       '（此档不判 FAIL：国务院通常前一年 11 月发布，CI 长期挂红会被无视，比没有更糟）'
+       % (tc.CAL_FULL_UNTIL, LEAD))
+else:
+    ok('覆盖度充足：official=%s，剩余 %d 天' % (tc.CAL_FULL_UNTIL, LEAD))
+
+# 缺口取证（不判红，只把事实钉进日志）：说明这道守卫针对的不是假想风险。
+# 用真实日历函数算，而不是写死结论 —— 补全 2027 后本行会自然变成"是交易日：否"。
+if tc.HOLIDAYS_BY_YEAR.get(2027, {}).get('official') is False:
+    print('  note  缺口取证：2027 春节段未收录，2027-02-08(周一) 当前被判为%s交易日'
+          '（补全 2027 表并置 official=True 后，本行自动转为"非交易日"）'
+          % ('【是】' if tc.is_trade_day('2027-02-08') else '非'))
 
 # ══════════════════════════════════════════════════════════════════════════
 print()
