@@ -25,7 +25,7 @@ import urllib.request
 
 from collections import Counter
 
-from fetch_common import atomic_write_json, drop_unsettled_tail, is_rows_finite
+from fetch_common import MIN_BARS, atomic_write_json, drop_unsettled_tail, is_rows_finite
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CTX = ssl.create_default_context()
@@ -150,7 +150,7 @@ def fetch_rows(sw):
     for name, fn in SOURCES:
         try:
             rows, fq = fn(sw)
-            if len(rows) < 1000:
+            if len(rows) < MIN_BARS:   # [2026-10-21] 原为 1000, 过宽会静默截短历史(见 fetch_common.MIN_BARS)
                 errs.append("%s:rows=%d" % (name, len(rows)))
                 continue
             ds = [r[0] for r in rows]

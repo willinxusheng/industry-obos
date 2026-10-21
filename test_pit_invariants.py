@@ -245,10 +245,152 @@ try:
 except Exception as e:
     bad("D7 空序列让门禁崩溃: %s: %s" % (type(e).__name__, str(e)[:60]))
 
+print("\n===== E 回测时点网格不得随 asof 漂移 =====")
+# [2026-10-21] 旧实现:
+#     t_end   = T - horizon - 1
+#     t_start = max(320, t_end - bt_back)
+#     tpts    = range(t_start, t_end + 1, horizon)
+# 数据每天 +1 条 -> t_end 也 +1 -> t_start 跟着 +1, 而步长恒 30
+#   => 整个网格每天平移 1 天, 相邻两个 asof 的时点集合【交集为 0】。
+# 实测后果(线上 model_metrics_log 23 个交易日):
+#   dir_acc 日间 σ=1.68pp(单日最大 3.0pp)、p_up_auc σ=1.67pp、
+#   block_t 一天从 4.17 跳到 5.53 —— 全是"换了一批完全不相交的样本"的抽样噪声,
+#   却被展示成"模型今天变好/变差"。同时把 metrics_drift 的基线 sd 撑大,
+#   真实退化被淹没。非重叠采样本应每 30 天才产生 1 个新样本, 指标本就该 30 天更新一次。
+# 修复: t_start 对齐到 floor 的整数倍网格(obos_core.backtest_timepoints)。
+_H, _BT, _FLOOR = 30, 900, 320
+
+
+def _old_grid(T):
+    """修复前的公式, 仅用于反向对照(证明本段判据真能抓红)。"""
+    te = T - _H - 1
+    return list(range(max(_FLOOR, te - _BT), te + 1, _H))
+
+
+# E1 正向: 全部时点必须落在【同一族绝对网格】(t - floor) % horizon == 0。
+#    旧实现的 t_start = t_end - bt_back 让 t_start 随 T 每天 +1, 时点相位因此乱掉。
+base_T = 1300
+g0 = obos_core.backtest_timepoints(base_T)
+PH = [(t - obos_core.BT_FLOOR) % _H for t in g0]
+if not g0:
+    bad("E1 网格为空 —— 用例前提失效")
+elif any(p != 0 for p in PH):
+    bad("E1 时点未锚定在绝对网格上(相位 %s) —— 网格会随 asof 漂移" % sorted(set(PH)))
+else:
+    ok("E1 全部 %d 个时点锚定在同一族绝对网格((t-%d)%%%d==0)"
+       % (len(g0), obos_core.BT_FLOOR, _H))
+
+# E2 正向: 任意相邻两个 asof 的时点集合都必须高度重叠。
+#    网格每满 horizon 只整体滚一格 => 重叠应为 30/31; 旧实现是 0/31。
+worst_ov, worst_d = 10 ** 9, None
+for d in range(1, _H + 1):
+    gd = obos_core.backtest_timepoints(base_T + d)
+    ov = len(set(g0) & set(gd))
+    if ov < worst_ov:
+        worst_ov, worst_d = ov, d
+if g0 and worst_ov >= len(g0) - 1:
+    ok("E2 连续 %d 天里最差重叠 %d/%d (发生在 d=%d), 样本不换批"
+       % (_H, worst_ov, len(g0), worst_d))
+else:
+    bad("E2 d=%d 时重叠仅 %d/%d —— 相邻 asof 用了几乎不相交的样本, 日间指标不可比"
+        % (worst_d, worst_ov, len(g0)))
+
+# E3 无未来泄漏: 每个时点都必须能完整看到 horizon 步的未来
+_leak = [t for t in g0 if t + _H > base_T - 1]
+if _leak:
+    bad("E3 %d 个时点越界(如 t=%d, t+%d > T-1) —— 存在前视泄漏"
+        % (len(_leak), _leak[0], _H))
+else:
+    ok("E3 全部 %d 个时点满足 t+horizon <= T-1, 无前视泄漏" % len(g0))
+
+# E4 反向对照: 旧公式必须被本段判据抓红(否则可能是"恒不变"的退化实现也能通过)
+o_worst, o_d = 10 ** 9, None
+for d in range(1, _H + 1):
+    ov = len(set(_old_grid(base_T)) & set(_old_grid(base_T + d)))
+    if ov < o_worst:
+        o_worst, o_d = ov, d
+if o_worst * 2 <= len(g0):
+    ok("E4 反向对照: 旧公式最差重叠仅 %d/%d (d=%d) —— 判据能抓红" % (o_worst, len(g0), o_d))
+else:
+    bad("E4 旧公式最差重叠 %d/%d, 未被判据区分 —— E1/E2 可能对任何实现都通过"
+        % (o_worst, len(g0)))
+
+# E5 反向对照: 网格必须在 horizon 边界真正滚动(防"永远返回同一个集合"的退化实现)
+if obos_core.backtest_timepoints(base_T + _H) != g0:
+    ok("E5 网格在跨过 horizon 后正常滚动(未退化成常量)")
+else:
+    bad("E5 跨过 horizon(%d 天)后网格仍未滚动 —— 实现退化成常量, 永不纳入新样本" % _H)
+
+# E6 防腐化: 三处调用点必须共用同一函数, 不得再各自内联旧公式
+#    逐行检查且剔除注释 —— 否则说明"旧公式长什么样"的注释本身会被误判成代码。
+_src_ok, _src_bad = [], []
+for _fn in ("obos_core.py", "backtest_deep.py", "backtest_ext.py"):
+    _s = open(os.path.join(BASE, _fn), encoding="utf-8").read()
+    _code = "\n".join(ln.split("#")[0] for ln in _s.split("\n"))
+    # 只认旧公式的硬编码字面量 max(320, ...)；新实现用的是 max(floor, ...)
+    if "max(320, t_end - " in _code:
+        _src_bad.append(_fn)
+    if "backtest_timepoints" in _code:
+        _src_ok.append(_fn)
+if _src_bad:
+    bad("E6 仍有脚本内联旧公式(会再次漂移): %s" % ", ".join(_src_bad))
+elif len(_src_ok) == 3:
+    ok("E6 三个调用点均改用 backtest_timepoints(), 无内联旧公式")
+else:
+    bad("E6 未接线到 backtest_timepoints 的文件: %s"
+        % ", ".join(set(("obos_core.py", "backtest_deep.py", "backtest_ext.py")) - set(_src_ok)))
+
+# E7 防腐化: fetch 层与 compute 层的「最少交易日数」契约必须同值(单边改动就漂移)
+import fetch_common  # noqa: E402
+
+if compute.MIN_BARS == fetch_common.MIN_BARS:
+    ok("E7 两处 MIN_BARS 一致 = %d" % compute.MIN_BARS)
+else:
+    bad("E7 MIN_BARS 不一致: compute=%s fetch_common=%s —— 契约两端已分叉"
+        % (compute.MIN_BARS, fetch_common.MIN_BARS))
+
+# E8 基准被截短必须 FAIL(而不是算出一份"看着正常"的产物)
+#    实测依据: 丢最前 40 个有效 score -> OB/OS 阈值最大偏 10.2 分、0.98% 时点分档翻转。
+_saved_d, _saved_c = bdates[:], bclose[:]
+try:
+    _short_n = compute.MIN_BARS - 30
+    bdates[:] = _saved_d[len(_saved_d) - _short_n:]
+    bclose[:] = _saved_c[len(_saved_c) - _short_n:]
+    _raw_short = _mk(31, {})
+    if _raw_short is None:
+        print("  SKIP  E8 (合成基准构造失败)")
+    else:
+        _r = _g(_raw_short, 31, False)
+        if _r["status"] == "FAIL" and _r["n_dates"] == _short_n:
+            ok("E8 基准截短到 %d 条 -> FAIL(未静默产出一份偏移的历史阈值)" % _short_n)
+        else:
+            bad("E8 基准截短到 %d 条 -> %s (期望 FAIL)"
+                % (_short_n, _r["status"]))
+finally:
+    bdates[:] = _saved_d
+    bclose[:] = _saved_c
+
+# E9 正向对照: 契约下限本身必须 PASS(否则 E8 可能只是"恒 FAIL")
+_saved_d2, _saved_c2 = bdates[:], bclose[:]
+try:
+    _ok_n = compute.MIN_BARS
+    bdates[:] = _saved_d2[len(_saved_d2) - _ok_n:]
+    bclose[:] = _saved_c2[len(_saved_c2) - _ok_n:]
+    _raw_ok = _mk(31, {})
+    if _raw_ok is not None:
+        _r = _g(_raw_ok, 31, False)
+        if _r["status"] == "PASS":
+            ok("E9 正向对照: 基准恰为下限 %d 条 -> PASS" % _ok_n)
+        else:
+            bad("E9 基准恰为下限 %d 条却 %s (期望 PASS)" % (_ok_n, _r["status"]))
+finally:
+    bdates[:] = _saved_d2
+    bclose[:] = _saved_c2
+
 print()
 if fail == 0:
     print("PIT INVARIANTS TEST PASSED：无前视泄漏 / 非有限值不入秩 / 分位区间不退化 / "
-          "回退源截短不得冒充口径真空期")
+          "回退源截短不得冒充口径真空期 / 回测网格不随 asof 漂移 / 基准条数契约")
 else:
     print("PIT INVARIANTS TEST FAILED：%d 项" % fail)
 sys.exit(1 if fail else 0)

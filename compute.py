@@ -24,6 +24,13 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
+# [2026-10-21] 基准最少交易日数。与 fetch_common.MIN_BARS 是**同一个契约**的两端:
+#   fetch 层负责拦住"接口返回太短"; 这里负责拦住"本地产物/入库快照被截短后拿去算"。
+#   必须保持一致 —— test_pit_invariants.py 的 E7 会校验两处数值相等(防单边改动漂移)。
+#   为什么是 1280: 取数请求 1300 条, 正常返回 1300/1301; 少 20 条以内属接口抖动,
+#   再多就会吃掉 PIT 预热期并改写历史阈值(实测丢 40 个有效值 -> 阈值最大偏 10.2 分)。
+MIN_BARS = 1280
+
 # [PJ] 预测日志(审计资产, 2026-09-04): 每次主模式计算把当日的"预测快照"追加落盘.
 #   复核工具 audit_predictions.py 在预测成熟(30 交易日后)后, 用当时的快照 vs 后来实际
 #   分数做无泄漏复核(方向命中/p_up Brier/区间覆盖) —— 让"预测准确性"可被持续审计,
@@ -359,10 +366,23 @@ def quality_gate(raw, bdates, bclose, expect_n=31, relax_prefix_vacuum=False):
     #   26/31 行业、fq_key=qfq、全行业缺末日 三种故障注入后均为 WARN 放行。
     # [2026-09-30] fatal 追加: 系统性未落定平线(过半行业) —— 平线冒充收盘价发布后,
     #   asof 会变成当天, freshness gate 误判"已最新"而停止重试, 平线挂一整天。
+    # [2026-10-21] 基准序列条数不得被静默截短。
+    #   fetch 层已用 fetch_common.MIN_BARS 拦接口返回过短; 这里拦的是【另一条路径】——
+    #   仓库里入库的 data/benchmark.json 是历史快照, 或某人手工替换了数据文件。
+    #   后果不是崩溃而是"算完、格式正常、数字是错的": PIT 扩张阈值 expanding_quantile()
+    #   从序列首个有效点起累积, 起点后移会改写全部历史阈值与 state 分档。
+    #   实测(丢最前 K 个有效 score 后重算 OB/OS 阈值): K=40 -> 阈值最大偏 10.2 分、
+    #   0.98% 的时点分档翻转; 而 score 自身前 144 个索引是预热期, 少 1~2 条无害。
+    short_bars = n_dt < MIN_BARS
+    if short_bars:
+        issues.append("基准仅 %d 个交易日(< 契约下限 %d)：序列起点被截短会改写 PIT 扩张阈值"
+                      "与历史 state 分档，且不会报错。请重跑 fetch_benchmark.py"
+                      % (n_dt, MIN_BARS))
     fatal = bool(dup or zero_c or unsorted or n_ind != expect_n or bad_fq
                  or (miss_last and miss_last == n_ind)
                  or flat_last * 2 > n_ind
                  or empty_series
+                 or short_bars
                  # [2026-10-16] "形态像口径真空期但未登记"不是"数据脏了一点"，而是
                  #   "很可能已回退到残缺源"。它必须 FAIL，不能只靠 cover>0.999 的容差
                  #   落进 WARN —— 该容差随行业数放大: 一级 31 个 -> 缺<=40 天放行,

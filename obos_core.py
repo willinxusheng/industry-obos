@@ -916,13 +916,45 @@ def calibration_regime(samples, metas, cal_h, min_n=300):
     return {g: float(np.clip(v, 0.5, 2.0)) for g, v in out.items()}
 
 
+BT_FLOOR = 320       # 回测时点的最早可用索引(需留足 RSI/分位预热)
+
+
+def backtest_timepoints(T, horizon=HORIZON, bt_back=BT_BACK, floor=BT_FLOOR):
+    """回测时点网格 —— **锚定绝对索引**, 不随 asof 漂移。
+
+    [2026-10-21] 修一个"算完、格式正常、数字是错的"的静默缺陷。
+    旧实现:
+        t_end   = T - horizon - 1
+        t_start = max(floor, t_end - bt_back)
+        tpts    = range(t_start, t_end + 1, horizon)
+    数据每天增长 1 条时 t_end 也 +1, 于是 t_start 跟着 +1, 而步长恒为 horizon
+    —— 整个网格【每天平移 1 天】。实测 T=1300 与 T=1301 的 31 个时点【交集为 0】,
+    即相邻两个交易日的回测样本【完全不重叠】。后果:
+      · 看板「方向准确率 / block_t / p_up_auc / Brier / MAE」每天换一批互不相交的
+        样本, 日间波动实测 dir_acc σ=1.68pp(单日最大 3.0pp)、block_t 一天从 4.17
+        跳到 5.53 —— 全是抽样噪声, 却会被读成「模型变好/变差了」;
+      · 跨日不可比、不可复现(同一 asof 内可复现, 换一天就换样本);
+      · metrics_drift.py 的漂移基线 sd 被这层噪声撑大, 真实退化被淹没(形同虚设);
+      · 非重叠采样本应每 horizon 天才产生 1 个新样本, 因此指标本来就该每 30 天
+        才更新一次 —— 每天乱跳本身就违背了 [B1] 非重叠采样的语义。
+    修复: 把 t_start 对齐到 floor 的整数倍网格 => 30 天内网格恒定, 每满 horizon
+    才整体滚动一格(此时新旧样本重叠 30/31 ≈ 97%), 指标连续可比。
+    泄漏性不变: t_end = T - horizon - 1 保证 t + horizon <= T - 1, 与旧实现一致。
+    """
+    if T <= horizon + 1:
+        return []
+    t_end = T - horizon - 1
+    raw = max(floor, t_end - bt_back)
+    t_start = floor + ((raw - floor) // horizon) * horizon
+    return list(range(t_start, t_end + 1, horizon))
+
+
 def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=None, industry_rows=None):
     """无重叠 walk-forward. 返回 (metrics_dict, cals) — cals 为各方法的逐步长校准系数
     [A2] 块级 Diebold-Mariano [A3] 条件覆盖诊断 [A4] 分年度稳定性 [A6] 组合 [A7] 按步长校准"""
     NK, T = S.shape
-    t_end = T - horizon - 1
-    t_start = max(320, t_end - bt_back)
-    tpts = list(range(t_start, t_end + 1, horizon))
+    # [2026-10-21] 网格统一走 backtest_timepoints(): 锚定绝对索引, 不再随 T 平移
+    tpts = backtest_timepoints(T, horizon=horizon, bt_back=bt_back)
     NB = len(tpts)
 
     methods = {

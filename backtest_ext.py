@@ -22,7 +22,7 @@ sys.path.insert(0, BASE)
 
 from obos_core import (HORIZON, OB_Q, OS_Q, HOT_Q, COLD_Q, PIT_MIN_N,
                        AnalogLib, expanding_quantile, make_score_pit,
-                       regime_of, sub_indicators)
+                       regime_of, sub_indicators, backtest_timepoints)
 from backtest_deep import load, pct_ret, state_of, overlap_stats, fmt_stat
 
 H_LIST = [5, 10, 20, 30]
@@ -245,9 +245,8 @@ def main():
     lib = AnalogLib(S)
     bins = [(0.0, 0.35), (0.35, 0.45), (0.45, 0.55), (0.55, 0.65), (0.65, 1.01)]
     rec = []
-    t_end = n_t - HORIZON - 1
-    t_start = max(320, t_end - 900)
-    for t in range(t_start, t_end + 1, HORIZON):
+    # [2026-10-21] 同 backtest_deep: 网格走 obos_core.backtest_timepoints(), 不随 n_t 平移
+    for t in backtest_timepoints(n_t):
         for k in range(K):
             if not np.isfinite(S[k, t]):
                 continue

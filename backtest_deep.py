@@ -27,7 +27,7 @@ from obos_core import (HORIZON, OB_Q, OS_Q, HOT_Q, COLD_Q, PIT_MIN_N,
                        make_score_pit, pct_rank_series, pit_weight_path,
                        run_backtest, sub_indicators, walkforward_weights,
                        weights_from_ic, base_persist, base_combo, base_combo_mkt,
-                       norm_sf)
+                       norm_sf, backtest_timepoints)
 
 np.set_printoptions(suppress=True)
 
@@ -273,9 +273,10 @@ def main():
     lib = AnalogLib(S)
     bins = [(0.0, 0.35), (0.35, 0.45), (0.45, 0.55), (0.55, 0.65), (0.65, 1.01)]
     cal = {b: [0, 0, 0.0] for b in bins}    # [升温数, 样本数, p_up 累加]
-    t_end = n_t - HORIZON - 1
-    t_start = max(320, t_end - 900)
-    for t in range(t_start, t_end + 1, HORIZON):
+    # [2026-10-21] 网格统一走 obos_core.backtest_timepoints(): 锚定绝对索引。
+    #   旧写法 t_start = max(320, t_end - 900) 会让 31 个时点随 n_t 每天平移 1 天,
+    #   相邻两个 asof 的时点集合交集为 0 —— 指标日间差异全是抽样噪声。
+    for t in backtest_timepoints(n_t):
         for k in range(K):
             if not np.isfinite(S[k, t]):
                 continue
