@@ -1108,14 +1108,22 @@ def main(sub_mode=False):
             if bt["oos"].get("matured"):
                 print("OOS audit:", json.dumps(bt["oos"], ensure_ascii=False), flush=True)
                 _o = bt["oos"]
+                # [2026-11-06] 口径必须写全, 否则板上 56.7 与报告 57.2 对不上账:
+                #   dir_all = 剔除"实际分数一格未动"后的全样本方向命中;
+                #   dir_big = 再剔除 |Δ分数|<1 的近似持平样本 —— 后者更能代表"真给了方向"的场合。
+                #   两个数都摆出来并标注分母, 比只报一个更诚实。
+                _mrow = _o.get("n_mature_rows") or _o["matured"]
+                _drop = max(0, _mrow - _o["matured"])
                 bt["conclusion"] += (
-                    "【真样本外】%s 起 %d 个 asof 的 %s 行预测已成熟：方向 %s%%（与 walk-forward 同口径为 %s%%，"
-                    "全样本口径 %s%%）、区间覆盖 %s%%、Brier %s —— walk-forward 与真样本外的差距就是"
-                    "「回放历史」与「真前瞻」的差距，规划时请按后者估。"
-                    % (_o["span"][0], _o["n_asof"], _o.get("n_mature_rows") or _o["matured"],
-                       ("%.1f" % (_o["dir_big"] * 100)) if _o.get("dir_big") is not None else "N/A",
-                       ("%.1f" % ((mm.get("dir_acc") or 0) * 100)),
+                    "【真样本外】%s 起 %d 个 asof 共 %d 行预测已成熟，其中 %d 行实际分数一格未变"
+                    "（方向无定义）已剔除，按 %d 行计：方向 %s%%（与 walk-forward 同口径为 %s%%）；"
+                    "再剔除 |Δ分数|<1 的近似持平样本后剩 %s 行、方向 %s%%；区间覆盖 %s%%、Brier %s。"
+                    "—— walk-forward 与真样本外的差距就是「回放历史」与「真前瞻」的差距，规划时请按后者估。"
+                    % (_o["span"][0], _o["n_asof"], _mrow, _drop, _o["matured"],
                        "%.1f" % (_o["dir_all"] * 100),
+                       "%.1f" % ((mm.get("dir_acc") or 0) * 100),
+                       _o.get("n_big", "N/A"),
+                       ("%.1f" % (_o["dir_big"] * 100)) if _o.get("dir_big") is not None else "N/A",
                        ("%.1f" % (_o["coverage"] * 100)) if _o.get("coverage") is not None else "N/A",
                        _o.get("brier")))
     except Exception as _e:
