@@ -14,6 +14,7 @@
 
 用法: python test_pit_invariants.py   (需 numpy; 不联网, 不写盘)
 """
+import datetime
 import importlib.util
 import math
 import os
@@ -387,10 +388,67 @@ finally:
     bdates[:] = _saved_d2
     bclose[:] = _saved_c2
 
+# E10 [2026-11-06] 前导 K 线抖动不变性: 序列头部多/少几根, 选中的时点【日期】必须逐日相同。
+#     背景: E1/E2 只守住"不随 asof 平移"(索引锚定)。但索引锚定对【起点抖动】不设防 ——
+#     fetch 请求 1300 根, 接口有时回 1301 根, index 320 对应的日历日就挪 1 天, 30 日网格
+#     整体平移 -> 又一次换样本。实测(只从头部丢 K 根, 其余数据完全相同):
+#       K=0 dir_acc 0.681 / block_t 4.94 / mae 15.66
+#       K=1 0.687 / 5.46 / 16.19 ; K=2 0.670 / 5.03 / 15.79 ; K=5 0.683 / 5.21 / 15.91
+#     线上可核对: CI 构建 n_dates=1301 dir_acc 0.660 / block_t 4.44,
+#     本地重取 n_dates=1300 → 0.681 / 4.94, 同一 asof、同一数据源。
+#     判据: 日历锚定后, drop 1..5 根得到的时点日期序列必须与 drop=0 逐日一致。
+def _bdays(n, start=datetime.date(2021, 6, 25)):
+    out, d = [], start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+        d += datetime.timedelta(days=1)
+    return out
+
+
+_dates1300 = _bdays(1300)
+_tp0 = obos_core.backtest_timepoints(1300, dates=_dates1300)
+_d0 = [_dates1300[t] for t in _tp0]
+if not _d0:
+    bad("E10 日历锚定网格为空 —— 用例前提失效")
+else:
+    _diff = []
+    for _drop in range(1, 6):
+        _dd = _dates1300[_drop:]
+        _tp = obos_core.backtest_timepoints(len(_dd), dates=_dd)
+        _dk = [_dd[t] for t in _tp]
+        if _dk != _d0:
+            _miss = sorted(set(_d0) - set(_dk))[:2]
+            _add = sorted(set(_dk) - set(_d0))[:2]
+            _diff.append("drop=%d(缺 %s / 多 %s)" % (_drop, _miss, _add))
+    if _diff:
+        bad("E10 前导 K 线抖动会改变回测样本: %s —— 同一 asof 指标不可复现" % "; ".join(_diff))
+    else:
+        ok("E10 头部丢 1~5 根 K 线, %d 个时点日期逐日不变(起点抖动不再换样本)" % len(_d0))
+
+# E11 反向对照: 旧索引锚定实现必须被 E10 判据抓红(否则 E10 对任何实现都能通过)
+def _old_tp(T):
+    te = T - _H - 1
+    ts = obos_core.BT_FLOOR + (((max(obos_core.BT_FLOOR, te - _BT)) - obos_core.BT_FLOOR) // _H) * _H
+    return list(range(ts, te + 1, _H))
+
+
+_old_d0 = [_dates1300[t] for t in _old_tp(1300)]
+_old_bad_n = 0
+for _drop in range(1, 6):
+    _try = _old_tp(1300 - _drop)
+    if [_dates1300[t + _drop] for t in _try] != _old_d0:
+        _old_bad_n += 1
+if _old_bad_n > 0:
+    ok("E11 反向对照: 旧索引锚定在 %d/5 种抖落下改变了样本日期 —— 判据能抓红" % _old_bad_n)
+else:
+    bad("E11 旧索引锚定未被判据区分 —— E10 可能对任何实现都通过")
+
 print()
 if fail == 0:
     print("PIT INVARIANTS TEST PASSED：无前视泄漏 / 非有限值不入秩 / 分位区间不退化 / "
-          "回退源截短不得冒充口径真空期 / 回测网格不随 asof 漂移 / 基准条数契约")
+          "回退源截短不得冒充口径真空期 / 回测网格不随 asof 漂移 / 基准条数契约 / "
+          "前导 K 线抖动不改样本")
 else:
     print("PIT INVARIANTS TEST FAILED：%d 项" % fail)
 sys.exit(1 if fail else 0)

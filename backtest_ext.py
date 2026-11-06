@@ -246,7 +246,7 @@ def main():
     bins = [(0.0, 0.35), (0.35, 0.45), (0.45, 0.55), (0.55, 0.65), (0.65, 1.01)]
     rec = []
     # [2026-10-21] 同 backtest_deep: 网格走 obos_core.backtest_timepoints(), 不随 n_t 平移
-    for t in backtest_timepoints(n_t):
+    for t in backtest_timepoints(n_t, dates=ref_dates):
         for k in range(K):
             if not np.isfinite(S[k, t]):
                 continue

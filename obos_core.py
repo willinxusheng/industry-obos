@@ -917,10 +917,30 @@ def calibration_regime(samples, metas, cal_h, min_n=300):
 
 
 BT_FLOOR = 320       # 回测时点的最早可用索引(需留足 RSI/分位预热)
+# [2026-11-06] 主推演换代的最小领先幅度(分)。见 run_backtest 里 [C4] 迟滞逻辑:
+#   两法 MAE 差常年在 ±0.3 分内摆动, 无阈值比较等于让抽样噪声每天决定交付哪套方法。
+MAIN_SWITCH_MARGIN = 0.5
+# [2026-11-06] 网格相位的**日历锚点**。索引锚定(floor=320)只解决了"asof 每天 +1"
+#   导致的平移, 没解决"序列起点抖动": fetch 请求 1300 根, 接口有时回 1301 根
+#   (或 1300 变 1299), 于是 index 320 对应的日历日整体挪 1 天 -> 30 日网格的全部
+#   时点日期跟着挪 1 天 -> 又换了一批样本。实测(probe_lead_drop.py, 只从序列头部
+#   丢掉 K 根 K 线, 其余数据一模一样):
+#       K=0 dir_acc 0.681 / block_t 4.94 / mae 15.66
+#       K=1 dir_acc 0.687 / block_t 5.46 / mae 16.19
+#       K=2 dir_acc 0.670 / block_t 5.03 / mae 15.79
+#       K=5 dir_acc 0.683 / block_t 5.21 / mae 15.91
+#   即"同一 asof、同一数据源、同一份历史", 仅因取数窗口多/少一根, 方向准确率跨
+#   1.7pp、block_t 跨 0.71、MAE 跨 0.9 —— 与第七轮那个"每天平移"是同一个病根的另一半。
+#   线上可核对: CI 构建(n_dates=1301, 起点 2021-06-25) dir_acc 0.660 / block_t 4.44,
+#   本地重取(n_dates=1300, 起点 2021-06-28) 0.681 / 4.94。
+#   修复: 相位改为按**日历日**锚定 —— 取 >= BT_ANCHOR 的首个交易日作为晶格原点,
+#   此后每 horizon 个交易日一格。前导多/少几根只改变索引编号, 不改变被选中的日期。
+BT_ANCHOR = "2021-07-02"
 
 
-def backtest_timepoints(T, horizon=HORIZON, bt_back=BT_BACK, floor=BT_FLOOR):
-    """回测时点网格 —— **锚定绝对索引**, 不随 asof 漂移。
+def backtest_timepoints(T, horizon=HORIZON, bt_back=BT_BACK, floor=BT_FLOOR,
+                        dates=None):
+    """回测时点网格 —— **锚定日历日**, 既不在 asof 推进时平移, 也不因前导 K 线抖动而平移。
 
     [2026-10-21] 修一个"算完、格式正常、数字是错的"的静默缺陷。
     旧实现:
@@ -944,9 +964,85 @@ def backtest_timepoints(T, horizon=HORIZON, bt_back=BT_BACK, floor=BT_FLOOR):
     if T <= horizon + 1:
         return []
     t_end = T - horizon - 1
+    # [2026-11-06] 优先: 日历锚定晶格(前导 K 线抖动不变性)。
+    if dates is not None and len(dates) >= T:
+        i0 = None
+        for i in range(T):
+            if dates[i] >= BT_ANCHOR:
+                i0 = i
+                break
+        if i0 is not None:
+            cand = [t for t in range(i0, t_end + 1, horizon) if t >= floor]
+            if cand:
+                n = bt_back // horizon + 1
+                return cand[-n:]
+    # 回退: 无日历可用时按索引锚定(老行为, 仍保证不随 asof 平移)
     raw = max(floor, t_end - bt_back)
     t_start = floor + ((raw - floor) // horizon) * horizon
     return list(range(t_start, t_end + 1, horizon))
+
+
+def econ_diag(S, forecast_fn, closes, bclose, horizon=HORIZON, bt_back=BT_BACK,
+              dates=None, industry_rows=None):
+    """[2026-11-06] 经济含义诊断: 预测的分数增量 Δ = med[-1] - s_t 与
+    【未来 horizon 日相对沪深300 超额收益】的横截面关系。
+
+    为什么必须单列: 看板上的"方向准确率"是预测**分数自己**的均值回复 —— 分数由 RSI/
+    位置/乖离的分位合成, 天然强均值回复, 所以 60-70% 的准确率几乎不需要任何行业洞察,
+    "向历史均值回归"这一行朴素基准就能拿到同量级(如 2026-11-06: 主推演 0.694 vs
+    meanrev 0.706)。用户真正要的是行业相对强弱, 于是这里直接检验: 按 Δ 排序买高卖低,
+    未来 30 日的超额收益是否同步。IC≈0 即"该预测不能当超额收益信号用", 必须如实披露,
+    否则准确率数字会被误读成选行业能力。
+
+    口径: 每个回测时点做一次横截面 Spearman(Δ, 未来超额), 块级 t 检验(时点=1块);
+          多空 = 三分位高组 - 低组 的平均超额差。PIT: Δ 只用 ≤t 信息, 未来收益只做标签。
+    """
+    tpts = backtest_timepoints(S.shape[1], horizon=horizon, bt_back=bt_back, dates=dates)
+    rows_k = list(industry_rows) if industry_rows is not None else list(range(S.shape[0]))
+    ics, sprs = [], []
+    for t in tpts:
+        if t + horizon >= S.shape[1]:
+            continue
+        bret = bclose[t + horizon] / bclose[t] - 1.0
+        cur = []
+        for k in rows_k:
+            if not np.isfinite(S[k, t]):
+                continue
+            c = closes[k] if k < len(closes) else None
+            if not c or c[t] is None or c[t + horizon] is None or c[t] <= 0:
+                continue
+            r = forecast_fn(k, t)
+            if r is None:
+                continue
+            med = np.asarray(r[0], dtype=float)
+            if not np.isfinite(med[-1]):
+                continue
+            cur.append((float(med[-1]) - float(S[k, t]),
+                        float(c[t + horizon]) / c[t] - 1.0 - bret))
+        if len(cur) < 15:
+            continue
+        d = [x[0] for x in cur]
+        e = [x[1] for x in cur]
+        ic = spearman(d, e)
+        if ic is not None:
+            ics.append(ic)
+        order = sorted(range(len(d)), key=lambda j: d[j])
+        q = max(1, len(order) // 3)
+        sprs.append(float(np.mean([e[j] for j in order[-q:]]) -
+                           np.mean([e[j] for j in order[:q]])))
+    out = {"n_pts": len(ics)}
+    if ics:
+        m, t_, p_, nb = block_ttest(ics, h0=0.0)
+        out.update({"ic_mean": round(m, 4) if m is not None else None,
+                    "ic_t": round(t_, 2) if t_ is not None else None,
+                    "ic_p": round(p_, 4) if p_ is not None else None,
+                    "ic_pos_share": round(sum(1 for x in ics if x > 0) / len(ics), 3)})
+    if sprs:
+        m2, t2, p2, _ = block_ttest(sprs, h0=0.0)
+        out.update({"spread_pct": round(100 * m2, 2) if m2 is not None else None,
+                    "spread_t": round(t2, 2) if t2 is not None else None,
+                    "spread_pos_share": round(sum(1 for x in sprs if x > 0) / len(sprs), 3)})
+    return out
 
 
 def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=None, industry_rows=None):
@@ -954,7 +1050,8 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
     [A2] 块级 Diebold-Mariano [A3] 条件覆盖诊断 [A4] 分年度稳定性 [A6] 组合 [A7] 按步长校准"""
     NK, T = S.shape
     # [2026-10-21] 网格统一走 backtest_timepoints(): 锚定绝对索引, 不再随 T 平移
-    tpts = backtest_timepoints(T, horizon=horizon, bt_back=bt_back)
+    # [2026-11-06] 传入 dates -> 改为按日历日锚定, 取数窗口多/少一根也不再改样本
+    tpts = backtest_timepoints(T, horizon=horizon, bt_back=bt_back, dates=dates)
     NB = len(tpts)
 
     methods = {
@@ -1043,6 +1140,26 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
             cov_cal += int(((real >= lo) & (real <= hi)).sum())
             cn += len(real)
         m, tstat, p, nb = block_ttest(dirs[mname])
+        # [2026-11-06] 留出覆盖率: 上面的 coverage_cal 是在【拟合系数所用的同一批样本】上
+        #   算的, 数学上恒等于 50%, 不含任何验证信息(看板把它渲染成"校准后 50.0%"极易被
+        #   读成"样本外也覆盖 50%")。这里按时间块奇偶做 2 折交叉: 用一半块拟合系数,
+        #   在另一半块上评估, 两个方向合并 —— 才是"没见过的样本上到底盖住多少"。
+        hold_cov, hold_n = 0, 0
+        if NB >= 6:
+            pairs = list(zip(raw[mname], rmeta[mname]))
+            for fit_par, ev_par in ((0, 1), (1, 0)):
+                fit = [a for a, (b_, _s) in pairs if b_ % 2 == fit_par]
+                ev = [(a, s) for a, (b_, s) in pairs if b_ % 2 == ev_par]
+                if len(fit) < 20 or not ev:
+                    continue
+                c_f = calibration_factor(fit, horizon=horizon)
+                for (med, q25, q75, real), s_t in ev:
+                    # 分区乘子沿用全样本估计(折内样本过少, 单独拟合会过拟合), 只交叉逐步长系数
+                    c2 = np.asarray(c_f, dtype=float) * creg.get(regime_of(s_t), 1.0)
+                    lo = med - (med - np.minimum(q25, q75)) * c2
+                    hi = med + (np.maximum(q25, q75) - med) * c2
+                    hold_cov += int(((real >= lo) & (real <= hi)).sum())
+                    hold_n += len(real)
         # 退化检测: 若绝大多数样本的预测变动为 0(如"持平"基线), 方向指标无意义 -> 置 None
         degen = st["dn"] > 0 and st["nz"] / st["dn"] < 0.5
         if degen:
@@ -1057,6 +1174,9 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
             "rmse_path": round(math.sqrt(st["se"] / st["n"]), 2),
             "coverage_raw": round(st["cov_raw"] / st["cn"], 3),
             "coverage_cal": round(cov_cal / cn, 3) if cn else None,
+            # [2026-11-06] 折外覆盖率: coverage_cal 是样本内拟合值(恒≈0.50, 无信息),
+            #   这一列才是"换一批时间块还盖不盖得住"的真实答案。
+            "coverage_holdout": round(hold_cov / hold_n, 3) if hold_n else None,
             "cal": round(float(np.mean(cal)), 3),
             "cal_h1": round(float(np.asarray(cal).ravel()[0]), 3),
             "cal_h30": round(float(np.asarray(cal).ravel()[-1]), 3),
@@ -1108,16 +1228,25 @@ def run_backtest(S, lib, lib_mkt=None, horizon=HORIZON, bt_back=BT_BACK, dates=N
     # ---------- 每块校准后覆盖率(主推演方法), 供 [A3][A4] 复用 ----------
     # [C4] 主推演优先 combo_mkt(市场因子分解): 仅当其 DM vs 持平显著(p<0.05)且增益优于 combo 时升级,
     # 否则退回 combo(仍显著) / knn, 保证交付的永远是统计上站得住的主推演.
-    MAIN = None
-    for _m in ("combo_mkt", "combo"):
-        if _m not in have:
-            continue
-        _d = out.get("dm_%s_vs_persist" % _m)
-        if _d and _d.get("dm_p") is not None and _d["dm_p"] < 0.05:
-            if MAIN is None or (_d.get("gain_mae") or 0) > (out.get("dm_%s_vs_persist" % MAIN, {}).get("gain_mae") or 0):
-                MAIN = _m
-    if MAIN is None:
-        MAIN = "combo" if "combo" in have else ("knn" if "knn" in have else (have[0] if have else "knn"))
+    #
+    # [2026-11-06] 修"假精度导致的日间抖动": 原实现用 gain_mae 的**大小比较**(无阈值),
+    #   两法 gain 常在 3.29 vs 3.32 这种量级上贴脸, 于是每日重算都会因抽样噪声翻转主推演
+    #   (线上实测 6 周切 3~6 次; metrics_log 可见 11-04/11-05 是 combo_mkt, 11-06 变回 combo)。
+    #   后果不只是口径跳变: 预测日志的 main 字段被切成两段, 30 日后复核只能分组看, 样本
+    #   本就只有 961 个; 且两法指标天生差一截(方向 0.694 vs 0.672、MAE 20.9 vs ... ), 于是
+    #   "模型今天准不准"混进了"今天用哪套方法"。
+    #   修复: 换成**迟滞(hysteresis)** —— combo 为在位者, 挑战者 combo_mkt 必须同时满足
+    #   ① DM p<0.05 ② MAE 增益领先在位者 >= MAIN_SWITCH_MARGIN 分, 才允许换代。
+    #   0.5 分的量级依据: 实测两法 MAE 差在 0.03~0.6 分之间摆动, 而块级 DM 的 95% 区间
+    #   宽度约 ±0.7 分 —— 小于这个数的"领先"无法与噪声区分。
+    MAIN = "combo" if "combo" in have else ("knn" if "knn" in have else (have[0] if have else "knn"))
+    _d_inc = out.get("dm_%s_vs_persist" % MAIN) or {}
+    if MAIN == "combo" and "combo_mkt" in have:
+        _d_ch = out.get("dm_combo_mkt_vs_persist") or {}
+        if (_d_ch.get("dm_p") is not None and _d_ch["dm_p"] < 0.05
+                and (_d_ch.get("gain_mae") or 0) - (_d_inc.get("gain_mae") or 0) >= MAIN_SWITCH_MARGIN):
+            MAIN = "combo_mkt"
+    out["main_switch_margin"] = MAIN_SWITCH_MARGIN
     _cm = cals.get(MAIN, {})
     cal_h_main = np.asarray(_cm.get("h", 1.0), dtype=float)
     cal_reg_main = _cm.get("reg", {})

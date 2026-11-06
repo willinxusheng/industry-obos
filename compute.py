@@ -15,7 +15,7 @@ from obos_core import (HORIZON, HOT_Q, COLD_Q, MIN_N, OB_Q, OS_Q, PIT_MIN_N,
                        T_FULL, VOL_WIN,
                        W_SMOOTH, WIN, CAL_FULL_UNTIL, CAL_COVER_UNTIL, DEFAULT_W, FC_K, FC_MODE,
                        FC_MPI, FC_SEP, FWD, IC_REBAL,                        AnalogLib, COMBO_W, base_combo, base_combo_mkt,
-                       regime_of, REGIME_CN,
+                       regime_of, REGIME_CN, econ_diag,
                        expanding_quantile, future_trade_dates, ic_on_range, ma,
                        make_score_pit, missing_trade_days, official_coverage_lead,
                        pct_rank_series, pit_weight_path,
@@ -1020,6 +1020,30 @@ def main(sub_mode=False):
     edge = None
     if mm.get("mae_end") and pst.get("mae_end"):
         edge = round((pst["mae_end"] - mm["mae_end"]) / pst["mae_end"] * 100, 1)
+    # [2026-11-06] 方向优势必须扣掉「向历史均值回归」这一朴素基准再谈:
+    #   分数是 RSI/位置/乖离的分位合成, 均值回复是它的内生性质, 所以 meanrev 基准
+    #   天然能拿到同量级的方向准确率(2026-11-06 实测: 主推演 0.694, meanrev 0.706)。
+    #   只报 dir_acc 与 50% 比, 等于把"分数会回归"当成"模型会预测"。此处落盘差值,
+    #   结论与前端必须同时给出这两个数, 否则数字会被读成选行业能力。
+    _mr = (bt.get("meanrev") or {}).get("dir_acc")
+    bt["dir_acc_meanrev"] = _mr
+    bt["dir_edge_vs_meanrev"] = (round(mm.get("dir_acc") - _mr, 3)
+                                if (mm.get("dir_acc") is not None and _mr is not None) else None)
+    # [2026-11-06] 经济含义: Δ 分数与未来超额收益的横截面 IC / 多空价差。
+    #   方向准确率回答"分数往哪走", 这一项回答"钱往哪走" —— 两者可以完全脱钩。
+    try:
+        _fc_main = {"combo_mkt": lambda k, t: base_combo_mkt(S, lib, k, t),
+                    "combo": lambda k, t: base_combo(S, lib_ind, k, t),
+                    "knn": lambda k, t: (lambda r: None if r is None else
+                                         (r["median"], r["p25"], r["p75"], r["p_up"]))(
+                                             lib_ind.forecast(k, t))}.get(MAIN)
+        if _fc_main is not None:
+            bt["econ"] = econ_diag(S, _fc_main, [b["close"] for b in base], bclose,
+                                   dates=ref_dates, industry_rows=range(K))
+            print("econ diag:", json.dumps(bt["econ"], ensure_ascii=False), flush=True)
+    except Exception as _e:      # 诊断失败不得拖垮主流程
+        print("econ diag failed:", repr(_e), flush=True)
+        bt["econ"] = {"error": repr(_e)[:120]}
     dmv = (bt.get("dm_%s_vs_persist" % MAIN) if MAIN in ("combo", "combo_mkt")
            else (bt.get("dm_vs_baseline", {}) or {}).get("persist")) or {}
     dp = dmv.get("dm_p")
@@ -1033,17 +1057,36 @@ def main(sub_mode=False):
     _pb_raw = _pc.get("brier_raw")
     # [2026-09-03] 不再声称"已保序校准(Brier x->y)": isotonic 映射样本外无改善(见 obos_core [E2] 注),
     # 交付为原始概率. Brier raw 若可得则如实披露, 便于读者判断概率校准质量.
+    # [2026-11-06] 结论必须自带三句"刹车", 否则数字会被读成它并不具备的能力:
+    #   ① 与 50% 比是虚的, 与「向均值回归」基准比才是真的;
+    #   ② coverage_cal 是样本内拟合值(恒≈50%), 留出覆盖率才是验证;
+    #   ③ 方向准确率(分数往哪走)与经济价值(超额收益往哪走)是两件事。
+    _mr = bt.get("dir_acc_meanrev")
+    _edge_dir = bt.get("dir_edge_vs_meanrev")
+    _econ = bt.get("econ") or {}
+    _ht = (mm.get("coverage_holdout") or 0) * 100
     bt["conclusion"] = (
         "方向准确率 %.1f%%（块级 t 检验 p=%s，已按“%d行业同期算1块”消除横截面相关导致的显著性夸大），"
-        "升温概率 AUC %s%s。点位误差比“持平”基线好 %s%%，但 Diebold-Mariano 块级检验 t=%s、p=%s，"
-        "该点位优势%s——可信的是方向与区间，不是具体分数。"
+        "但“向历史均值回归”这一朴素基准同期为 %s%%，净优势 %s pp——即该准确率主要来自分数的内生回归，"
+        "不是选行业能力。升温概率 AUC %s%s。点位误差比“持平”基线好 %s%%，Diebold-Mariano 块级检验 t=%s、p=%s，"
+        "该点位优势%s。区间：折外覆盖率 %s%%（目标 50%%；“校准后”列是样本内拟合值，恒等于 50%%，不含验证信息）。"
+        "经济含义：按预期分数变化买高卖低，未来 30 日超额收益的横截面 IC 均值 %s（t=%s），"
+        "三分位多空 %s%%，%s——方向准确率不等于超额收益。"
         "稳健性：%d 个可比年份中 %s 年方向有效，最差年份 %s 仅 %.1f%%；"
         "条件覆盖最偏的一档是「%s」实测 %.1f%%（目标 50%%）。"
         % ((mm.get("dir_acc") or 0) * 100, mm.get("block_p"), expect_n,
+           ("%.1f" % (_mr * 100)) if _mr is not None else "N/A",
+           ("%+.1f" % (_edge_dir * 100)) if _edge_dir is not None else "-",
            auc_txt,
            (", Brier %.3f（概率未做后验映射，样本外验证无改善）" % _pb_raw
             if _pb_raw is not None else ""),
            edge if edge is not None else "-", dmv.get("dm_t"), dp, sig,
+           ("%.1f" % _ht) if mm.get("coverage_holdout") is not None else "-",
+           ("%+.3f" % _econ["ic_mean"]) if _econ.get("ic_mean") is not None else "N/A",
+           _econ.get("ic_t") if _econ.get("ic_t") is not None else "-",
+           ("%+.2f" % _econ["spread_pct"]) if _econ.get("spread_pct") is not None else "-",
+           ("统计上不显著，不能当超额收益信号" if (_econ.get("spread_t") is None or abs(_econ.get("spread_t") or 0) < 2)
+            else "量级虽可观但需持续观察"),
            len(bt.get("year_stability") or []),
            ("%.0f%%" % ((bt.get("year_win_rate") or 0) * 100)),
            wy.get("year", "-"), (wy.get("dir_acc") or 0) * 100,
@@ -1052,6 +1095,32 @@ def main(sub_mode=False):
     bt["main_method"] = MAIN
     bt["combo_w"] = COMBO_W
     bt["industries_tested"] = len(industries)
+
+    # [2026-11-06] 真样本外对账: 唯一"当时写下、事后不能改"的证据。
+    #   上面的 walk-forward 是"用现在的模型回放历史", 天然比真实前瞻乐观 —— 2026-11-06
+    #   实测差 12.7pp(walk-forward 69.9% vs 首批成熟 57.2%)。不把这条摆上板, 用户会拿
+    #   69.9% 当预期准确率。样本不足时 matured=0, 前端自动隐藏这一段。
+    try:
+        from oos_audit import audit_rows, load_log
+        if os.path.exists(PRED_LOG):
+            _sc = {ind["code"]: ind["score"] for ind in industries}
+            bt["oos"] = audit_rows(load_log(PRED_LOG), ref_dates, _sc, horizon=HORIZON)
+            if bt["oos"].get("matured"):
+                print("OOS audit:", json.dumps(bt["oos"], ensure_ascii=False), flush=True)
+                _o = bt["oos"]
+                bt["conclusion"] += (
+                    "【真样本外】%s 起 %d 个 asof 的 %s 行预测已成熟：方向 %s%%（与 walk-forward 同口径为 %s%%，"
+                    "全样本口径 %s%%）、区间覆盖 %s%%、Brier %s —— walk-forward 与真样本外的差距就是"
+                    "「回放历史」与「真前瞻」的差距，规划时请按后者估。"
+                    % (_o["span"][0], _o["n_asof"], _o.get("n_mature_rows") or _o["matured"],
+                       ("%.1f" % (_o["dir_big"] * 100)) if _o.get("dir_big") is not None else "N/A",
+                       ("%.1f" % ((mm.get("dir_acc") or 0) * 100)),
+                       "%.1f" % (_o["dir_all"] * 100),
+                       ("%.1f" % (_o["coverage"] * 100)) if _o.get("coverage") is not None else "N/A",
+                       _o.get("brier")))
+    except Exception as _e:
+        print("oos audit failed:", repr(_e), flush=True)
+        bt["oos"] = {"error": repr(_e)[:120]}
 
     # [2026-09-12] 市场维度(沪深300 自身 OBOS 分)首次进入产物与前端。
     #   此前 mkt_score 造出来后只当作 combo_mkt 的分解输入, 从未落盘 —— 前端能看到的

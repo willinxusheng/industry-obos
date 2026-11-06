@@ -493,7 +493,7 @@
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
         + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
         + ((typeof lastScore === 'number' && lastScore >= 40 && lastScore <= 60)
-          ? '。<b style="color:#41617e">中性区提示</b>：当前处 40-60 震荡带，历史该区方向准确率≈55%（近随机）、p_up 校准偏差大，请以中位升降方向为主'
+          ? '。<b style="color:#41617e">中性区提示</b>：当前处 40-60 震荡带，分数在该区近乎随机游走（方向优势主要来自均值回复，见回测表「均值回复基准」行）、p_up 校准偏差大，请以中位升降方向为主'
           : '')
       : '';
     var mth = DATA.method || {};
@@ -615,7 +615,10 @@
       html += '<tr' + hl + '><td class="lft">' + row[0] + '</td>'
         + '<td>' + dirTxt + '</td>'
         + '<td>' + tpTxt + '</td>'
-        + '<td>' + pct(m.coverage_raw) + ' → <b>' + pct(m.coverage_cal) + '</b>'
+        // [2026-11-06] 折外覆盖率优先: coverage_cal 是"用同一批样本拟合系数再回头评估",
+        //   数学上恒等于 50%, 挂在表里会被读成"验证通过"。coverage_holdout 才是把时间块
+        //   按奇偶对折、一半拟合一半评估的结果(实测 49.7%, 与 50% 相符, 说明校准可迁移)。
+        + '<td>' + pct(m.coverage_raw) + ' → <b>' + pct(m.coverage_holdout != null ? m.coverage_holdout : m.coverage_cal) + '</b>'
         + '<span style="color:#98a2b3"> ×' + (m.cal != null ? m.cal.toFixed(2) : '-') + '</span></td>'
         + '<td>' + (m.mae_end != null ? m.mae_end : '-') + '</td>'
         + '<td>' + (m.rmse_path != null ? m.rmse_path : '-') + '</td>'
@@ -624,6 +627,16 @@
         + '<td class="lft c-bt-note" style="color:var(--sub);white-space:normal;max-width:280px">' + row[2] + '</td></tr>';
     });
     document.getElementById('btBody').innerHTML = html;
+    var econ = bt.econ || {};
+    var econTxt = '';
+    if (econ.ic_mean != null) {
+      econTxt = '<br/><b>经济含义（2026-11-06 新增）：</b>按“预期分数变化”买高卖低，未来 30 日'
+        + '<b>相对沪深300 超额收益</b>的横截面 IC 均值 <b>' + (econ.ic_mean > 0 ? '+' : '') + econ.ic_mean.toFixed(3)
+        + '</b>（块级 t=' + econ.ic_t + '），三分位多空 <b>'
+        + (econ.spread_pct > 0 ? '+' : '') + econ.spread_pct.toFixed(2) + '%</b>（t=' + econ.spread_t + '）。'
+        + '<span style="color:var(--sub)">换 6 个网格相位复核，IC 全程为正但量级仅 0.05~0.10、t 多在 2 以下'
+        + '—— 它是“很弱的偏好倾斜”，不是收益来源；方向准确率（分数往哪走）与该 IC（超额收益往哪走）不是同一件事。</span>';
+    }
     document.getElementById('btNote').innerHTML = '<b>结论：</b>' + (bt.conclusion || '回测数据不足')
       + '<br/><span style="color:var(--sub)">口径：' + (bt.industries_tested || 0) + ' 个行业 × '
       + (bt.n_blocks_total || 0) + ' 个<b>互不重叠</b>时间块（步长 ' + (bt.step || 30)
@@ -631,9 +644,13 @@
       + '<b>非重叠采样 = 每 ' + (bt.step || 30) + ' 个交易日才纳入 1 个新样本</b>，'
       + '因此这一列在 ' + (bt.step || 30) + ' 天内基本不变属正常（不是面板没更新）。'
       + '显著性用<b>块级 t 检验</b>（31个行业同一天算1个观测），因为同期行业高度相关，'
-      + '若按独立样本算 p 值会被夸大若干个数量级。方向准确率 &gt;50% 优于抛硬币；'
-      + '覆盖率 = 真实路径落在 P25-P75 的比例，理论值 50%，"校准后"列为按历史覆盖率反推系数缩放区间宽度的结果。'
-      + '"持平基线"方向准确率不适用（它从不预测方向变化），列出它是为了检验点预测有无真实价值。</span>';
+      + '若按独立样本算 p 值会被夸大若干个数量级。方向准确率 &gt;50% 优于抛硬币 —— '
+      + '<b>但真正的对照组是"均值回复基准"那一行</b>：分数本身强均值回复，只与 50% 比会把'
+      + '"内生回归"误读成"选行业能力"。覆盖率 = 真实路径落在 P25-P75 的比例，理论值 50%；'
+      + '<b>"→"右侧为折外覆盖率</b>（时间块奇偶对折，一半拟合系数、另一半评估），'
+      + '样本内"校准后"恒等于 50%、不含验证信息，故不再作为主展示。'
+      + '"持平基线"方向准确率不适用（它从不预测方向变化），列出它是为了检验点预测有无真实价值。</span>'
+      + econTxt;
   }
 
   

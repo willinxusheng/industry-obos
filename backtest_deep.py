@@ -276,7 +276,7 @@ def main():
     # [2026-10-21] 网格统一走 obos_core.backtest_timepoints(): 锚定绝对索引。
     #   旧写法 t_start = max(320, t_end - 900) 会让 31 个时点随 n_t 每天平移 1 天,
     #   相邻两个 asof 的时点集合交集为 0 —— 指标日间差异全是抽样噪声。
-    for t in backtest_timepoints(n_t):
+    for t in backtest_timepoints(n_t, dates=ref_dates):
         for k in range(K):
             if not np.isfinite(S[k, t]):
                 continue

@@ -638,7 +638,7 @@
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
         + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
         + ((typeof lastScore === 'number' && lastScore >= 40 && lastScore <= 60)
-          ? '。<b style="color:#41617e">中性区提示</b>：当前处 40-60 震荡带，历史该区方向准确率≈55%（近随机）、p_up 校准偏差大，请以中位升降方向为主'
+          ? '。<b style="color:#41617e">中性区提示</b>：当前处 40-60 震荡带，分数在该区近乎随机游走（方向优势主要来自均值回复，见回测表「均值回复基准」行）、p_up 校准偏差大，请以中位升降方向为主'
           : '')
       : '';
     var mth = DATA.method || {};
@@ -759,7 +759,7 @@
       html += '<tr' + hl + '><td class="lft">' + row[0] + '</td>'
         + '<td>' + dirTxt + '</td>'
         + '<td>' + tpTxt + '</td>'
-        + '<td>' + pct(m.coverage_raw) + ' → <b>' + pct(m.coverage_cal) + '</b>'
+        + '<td>' + pct(m.coverage_raw) + ' → <b>' + pct(m.coverage_holdout != null ? m.coverage_holdout : m.coverage_cal) + '</b>'
         + '<span style="color:#98a2b3"> ×' + (m.cal != null ? m.cal.toFixed(2) : '-') + '</span></td>'
         + '<td>' + (m.mae_end != null ? m.mae_end : '-') + '</td>'
         + '<td>' + (m.rmse_path != null ? m.rmse_path : '-') + '</td>'
