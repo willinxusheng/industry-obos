@@ -83,6 +83,11 @@ PRODUCTS = [
     dict(path="data/prediction_log.jsonl", committed=True, reason="", static_note="",
          clues=[("compute.py", '"prediction_log.jsonl"')]),
 
+    # [2026-11-06] 二级看板预测快照日志(109 子行业): sub 板的真样本外证据来源,
+    # 漏进清单 = sub 日志只存在 runner 上、次日被覆盖, 永远攒不出成熟样本。
+    dict(path="data/sub_prediction_log.jsonl", committed=True, reason="", static_note="",
+         clues=[("compute.py", '"sub_prediction_log.jsonl"')]),
+
     dict(path="data/model_metrics_log.jsonl", committed=True, reason="", static_note="",
          clues=[("compute.py", '"model_metrics_log.jsonl"')]),
 

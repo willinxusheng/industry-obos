@@ -48,7 +48,11 @@ except ImportError:
 SRC_FILES = ('app.js', 'sub_app.js', 'build_html.py', 'template.html', 'template_sub.html',
              'compute.py', 'obos_core.py', 'trading_calendar.py',
              'fetch_data.py', 'fetch_sub_data.py', 'fetch_benchmark.py', 'fetch_common.py',
-             'test_render.js', 'gate_edge_test.js')
+             'test_render.js', 'gate_edge_test.js',
+             # [2026-11-06] 主 job 内挂在 skip 闸门下的审计/监控/不变式脚本也必须在内:
+             # 不在清单 = 数据已最新时单独改它们, 主 job 跳过, 改了的门禁没人执行就上线
+             'oos_audit.py', 'audit_predictions.py', 'metrics_drift.py',
+             'test_audit_logic.py', 'test_pit_invariants.py')
 
 fail = 0
 def bad(msg):

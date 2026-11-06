@@ -38,6 +38,12 @@ MIN_BARS = 1280
 #   存储紧凑化: 只留复核必需的终点值(s/med/lo/hi@30d + p_up), 每行业每天 ~120B.
 PRED_LOG = os.path.join(BASE, "data", "prediction_log.jsonl")
 
+# [2026-11-06] 二级看板同款预测快照日志: 109 个子行业此前只算不记,
+#   于是 sub 板的"回测准确率"永远只有 walk-forward 模拟值、永远没有真样本外证据 ——
+#   正是主板 2026-11-06 堵上的那类盲区。30 交易日后首批成熟, 由 oos_audit 复核。
+#   与主日志分文件存放(代码空间不同, 混放会让 (asof, code) 幂等键互相踩)。
+SUB_PRED_LOG = os.path.join(BASE, "data", "sub_prediction_log.jsonl")
+
 # [2026-09-12] 模型指标日志: 每次主模式计算追加一行"模型当时长什么样"的汇总指标,
 #   与 PRED_LOG 的分工是 —— 那份记"预测了什么"(逐行业, 供 30 交易日后复核准确性),
 #   这份记"模型自身是否在漂移"(方向/AUC/Brier/覆盖/MAE/市场状态), 供跨日对照。
@@ -46,7 +52,9 @@ PRED_LOG = os.path.join(BASE, "data", "prediction_log.jsonl")
 MET_LOG = os.path.join(BASE, "data", "model_metrics_log.jsonl")
 
 
-def append_prediction_log(asof, industries, main=None):
+def append_prediction_log(asof, industries, main=None, path=None):
+    # [2026-11-06] path 参数: 主/二级各写各的日志(默认主日志, 行为与旧版一致)
+    path = path or PRED_LOG
     """按 asof 幂等追加预测快照行(JSON Lines). 只对主模式(31 一级行业)启用.
 
     [2026-10-16] 新增 `main` 字段 = 本行预测**由哪套主推演方法产生**。
@@ -59,8 +67,8 @@ def append_prediction_log(asof, industries, main=None):
       与 model_metrics_log 的 `main` 字段对齐（那边早就有，这边漏了）。
       旧行没有该字段，读取方必须容忍（按"未标注"分组），不得因此判契约破损。
     """
-    if os.path.exists(PRED_LOG):
-        with open(PRED_LOG, encoding="utf-8") as f:
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 # [2026-09-05] 原实现按行首前缀 '{"asof":"..."}' 匹配, 与 json.dumps 的
                 #   键顺序强耦合: 哪天给本行加个字段且排在 asof 前面, 幂等就静默失效,
@@ -93,10 +101,10 @@ def append_prediction_log(asof, industries, main=None):
             "p_up": fc.get("p_up"),
         }, ensure_ascii=False, separators=(",", ":")))
     if lines:
-        with open(PRED_LOG, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         print("prediction log appended: %d industries @ %s (→%s)"
-              % (len(lines), asof, PRED_LOG))
+              % (len(lines), asof, path))
 
 
 def append_metrics_log(asof, out):
@@ -1102,21 +1110,23 @@ def main(sub_mode=False):
     #   69.9% 当预期准确率。样本不足时 matured=0, 前端自动隐藏这一段。
     try:
         from oos_audit import audit_rows, load_log
-        if os.path.exists(PRED_LOG):
+        # [2026-11-06] 二级模式读二级日志(代码空间不同, 不能混)
+        _pred_log = SUB_PRED_LOG if sub_mode else PRED_LOG
+        if os.path.exists(_pred_log):
             _sc = {ind["code"]: ind["score"] for ind in industries}
-            bt["oos"] = audit_rows(load_log(PRED_LOG), ref_dates, _sc, horizon=HORIZON)
+            bt["oos"] = audit_rows(load_log(_pred_log), ref_dates, _sc, horizon=HORIZON)
             if bt["oos"].get("matured"):
                 print("OOS audit:", json.dumps(bt["oos"], ensure_ascii=False), flush=True)
                 _o = bt["oos"]
                 # [2026-11-06] 口径必须写全, 否则板上 56.7 与报告 57.2 对不上账:
-                #   dir_all = 剔除"实际分数一格未动"后的全样本方向命中;
-                #   dir_big = 再剔除 |Δ分数|<1 的近似持平样本 —— 后者更能代表"真给了方向"的场合。
+                #   dir_all = 剔除"预测持平"(med==s_t, 无从判定对错)后的全样本方向命中;
+                #   dir_big = 再剔除 |实际变动|<1 的样本 —— 与看板 walk-forward 同口径。
                 #   两个数都摆出来并标注分母, 比只报一个更诚实。
                 _mrow = _o.get("n_mature_rows") or _o["matured"]
                 _drop = max(0, _mrow - _o["matured"])
                 bt["conclusion"] += (
-                    "【真样本外】%s 起 %d 个 asof 共 %d 行预测已成熟，其中 %d 行实际分数一格未变"
-                    "（方向无定义）已剔除，按 %d 行计：方向 %s%%（与 walk-forward 同口径为 %s%%）；"
+                    "【真样本外】%s 起 %d 个 asof 共 %d 行预测已成熟，其中 %d 行预测中位数与当日分数相同"
+                    "（预测持平，方向无定义）已剔除，按 %d 行计：方向 %s%%（与 walk-forward 同口径为 %s%%）；"
                     "再剔除 |Δ分数|<1 的近似持平样本后剩 %s 行、方向 %s%%；区间覆盖 %s%%、Brier %s。"
                     "—— walk-forward 与真样本外的差距就是「回放历史」与「真前瞻」的差距，规划时请按后者估。"
                     % (_o["span"][0], _o["n_asof"], _mrow, _drop, _o["matured"],
@@ -1220,8 +1230,10 @@ def main(sub_mode=False):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
 
+    # [2026-11-06] 主/二级都记预测快照(各自的日志文件); 指标漂移日志仍只记主模式
+    append_prediction_log(asof, industries, MAIN,
+                          path=(SUB_PRED_LOG if sub_mode else PRED_LOG))
     if not sub_mode:
-        append_prediction_log(asof, industries, MAIN)
         append_metrics_log(asof, out)
     print("market(%s): score=%s lines ob/os/hot/cold=%s/%s/%s/%s state=%s regime=%s"
           % (market["name"], market["cur_score"], market["ob_line"], market["os_line"],

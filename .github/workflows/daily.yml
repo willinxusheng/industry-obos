@@ -240,12 +240,17 @@ jobs:
             #   本 job 内的 test_render.js / gate_edge_test.js 同理：skip 时它们不跑，
             #   改了断言却没人执行，等于门禁在新数据到来前一直是"没跑过"的状态。
             #   （test_dom_*.js 与 test_antifake 属独立 dom-gates job，每次都跑，无需列入。）
+            #   [2026-11-06] 再补"主 job 内的审计/监控/不变式门禁脚本"：
+            #     oos_audit.py / audit_predictions.py / metrics_drift.py /
+            #     test_audit_logic.py / test_pit_invariants.py 全部挂在 skip != 'true' 之下，
+            #     若不在清单内，数据已最新时单独改这些脚本 → 主 job 整体跳过 →
+            #     改了的门禁无人执行就上线（与 2026-09-05 那类"清单漏文件"同型）。
             #   命中后走的是完整链路（重算 + 重建），这正是改算法/取数所需要的。
             #   ⚠️ 改动此清单必须同步 test_freshness_gate.py 的 SRC_FILES，否则那道门禁判红。
             case "$BEFORE_SHA" in
               0000000000000000000000000000000000000000) ;;
               *) SRC_HIT=$(git diff --name-only "$BEFORE_SHA".."$AFTER_SHA" 2>/dev/null \
-                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|trading_calendar\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|fetch_common\.py|test_render\.js|gate_edge_test\.js)$' || true) ;;
+                   | grep -E '^(app\.js|sub_app\.js|build_html\.py|template\.html|template_sub\.html|compute\.py|obos_core\.py|trading_calendar\.py|fetch_data\.py|fetch_sub_data\.py|fetch_benchmark\.py|fetch_common\.py|test_render\.js|gate_edge_test\.js|oos_audit\.py|audit_predictions\.py|metrics_drift\.py|test_audit_logic\.py|test_pit_invariants\.py)$' || true) ;;
             esac
             if [ -n "$SRC_HIT" ]; then
               echo "push 命中前端源码: $(printf '%s' "$SRC_HIT" | tr '\n' ' ')"
@@ -435,7 +440,7 @@ jobs:
           # [2026-09-12] data/model_metrics_log.jsonl: 模型指标漂移日志(compute.py 每次追加
           #   一行汇总指标: 方向/AUC/Brier/覆盖/MAE/市场状态)。与 prediction_log 的分工是
           #   "模型长什么样" vs "预测了什么"。漏提交 = 漂移序列断档, 且断档是静默的。
-          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js data/prediction_log.jsonl data/model_metrics_log.jsonl
+          git add index.html echarts.min.js data.js sub.html sub_data.js sub_series.js series.js data/prediction_log.jsonl data/sub_prediction_log.jsonl data/model_metrics_log.jsonl
           if git diff --cached --quiet; then
             echo "::notice::产物无变化（数据源尚未发布更新的交易日K线，或当日为节假日），不提交、不覆盖线上，等待下次运行重试"
             echo "pushed=false" >> "$GITHUB_OUTPUT"
