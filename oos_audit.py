@@ -43,7 +43,8 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
     n_mature = 0
     cov = n_cov = 0
     br = []
-    by_reg = {"cold": [0, 0], "mid": [0, 0], "hot": [0, 0]}
+    by_reg = {"cold": [0, 0, 0, 0], "mid": [0, 0, 0, 0], "hot": [0, 0, 0, 0]}
+    #                                  ^hit ^n  ^cov_hit ^cov_n
     asofs = set()
     for (a, code), r in seen.items():
         i = idx.get(a)
@@ -61,6 +62,7 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
         # 方向只在【预测确实给了方向】时统计: med == s_t 表示"预测持平", 无从判定对错。
         #   与 audit_predictions.py 的 directed 判据一致(实测 310 行里 4 行预测持平,
         #   剔后 306 行, 与报告版的 57.2% 逐位相同)。覆盖/Brier 不受此过滤影响。
+        g = "cold" if s_t < 40 else ("hot" if s_t > 60 else "mid")
         if abs(d_fc) > 1e-9:
             n_all += 1
             ok = 1 if d_act * d_fc > 0 else 0
@@ -68,13 +70,17 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
             if abs(d_act) >= 1.0:
                 n_big += 1
                 hit_big += ok
-            g = "cold" if s_t < 40 else ("hot" if s_t > 60 else "mid")
             by_reg[g][1] += 1
             by_reg[g][0] += ok
         lo, hi = r.get("lo"), r.get("hi")
         if lo is not None and hi is not None:
             n_cov += 1
-            cov += 1 if lo <= act <= hi else 0
+            okc = 1 if lo <= act <= hi else 0
+            cov += okc
+            # [2026-11-14] 分 regime 覆盖 —— R10 实证：总体 46.9% 掩盖了
+            #   中区 29.4% / 冷区 64.1% 的强分化，必须拆开披露。
+            by_reg[g][3] += 1
+            by_reg[g][2] += okc
         if r.get("p_up") is not None:
             br.append((r["p_up"] - (1.0 if d_act > 0 else 0.0)) ** 2)
     if n_all < min_n:
@@ -90,7 +96,10 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
         "n_big": n_big,
         "coverage": round(cov / n_cov, 3) if n_cov else None,
         "brier": round(sum(br) / len(br), 4) if br else None,
-        "by_regime": {g: (round(v[0] / v[1], 3) if v[1] else None, v[1])
+        "by_regime": {g: {"dir": round(v[0] / v[1], 3) if v[1] else None,
+                          "n": v[1],
+                          "cov": round(v[2] / v[3], 3) if v[3] else None,
+                          "cov_n": v[3]}
                       for g, v in by_reg.items()},
     }
 

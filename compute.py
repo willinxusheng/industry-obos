@@ -1136,6 +1136,26 @@ def main(sub_mode=False):
                        ("%.1f" % (_o["dir_big"] * 100)) if _o.get("dir_big") is not None else "N/A",
                        ("%.1f" % (_o["coverage"] * 100)) if _o.get("coverage") is not None else "N/A",
                        _o.get("brier")))
+                # [2026-11-14] R10：补上 regime 分解。465 行成熟样本显示总体 57.9%
+                #   是「热区 80.5% / 中区 61.4% / 冷区 50.7%」的混合 —— 聚合数掩盖了
+                #   信号几乎全来自热区回落这一事实；冷区（逆向投资者最关心的反弹带）
+                #   在当前 regime 等同抛硬币。不披露就是误导。
+                _rg = _o.get("by_regime") or {}
+                if _rg and any(isinstance(v, dict) and v.get("n") for v in _rg.values()):
+                    _CN = {"cold": "冷区<40", "mid": "中区40-60", "hot": "热区>60"}
+                    _parts = []
+                    for _g in ("cold", "mid", "hot"):
+                        _v = _rg.get(_g)
+                        if isinstance(_v, dict) and _v.get("n"):
+                            _seg = "%s(n=%d) 方向 %s%%" % (
+                                _CN[_g], _v["n"],
+                                "%.1f" % (_v["dir"] * 100) if _v.get("dir") is not None else "N/A")
+                            if _v.get("cov") is not None:
+                                _seg += "/覆盖 %.1f%%" % (_v["cov"] * 100)
+                            _parts.append(_seg)
+                    if _parts:
+                        bt["conclusion"] += (" 分 regime：" + "，".join(_parts) +
+                            " —— 信号强弱的分布比聚合数更重要。")
     except Exception as _e:
         print("oos audit failed:", repr(_e), flush=True)
         bt["oos"] = {"error": repr(_e)[:120]}
