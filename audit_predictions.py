@@ -159,6 +159,8 @@ def main():
     brier = 0.0
     brier_n = 0
     cov_hit = cov_n = 0
+    # [2026-11-20] R11/B2 按实际变动幅度分档覆盖: [n, cov_hit]
+    by_mag = {}
     # [2026-09-05] 分区间此前累加了 Brier 却从不输出(死代码), 且没有自己的分母 ——
     #   若按方向样本数 n 去除, 分母口径与累加口径不同(方向要 |变动|>=1, Brier 不要),
     #   算出来是错的。故分区间改为分别计数: [dir_ok, dir_n, brier_sum, brier_n]。
@@ -184,6 +186,12 @@ def main():
         if lo is not None and hi is not None:
             cov_n += 1
             cov_hit += 1 if (lo <= real <= hi) else 0
+            # [2026-11-20] R11/B2 按实际变动幅度分档 —— 与 oos_audit.by_mag 同口径。
+            #   聚合覆盖 39.9% 的根因是大波动档(|Δ|>=20)覆盖仅 8.4%, 不分档看不见。
+            _mb = "<10" if abs(real - s) < 10 else ("10-20" if abs(real - s) < 20 else ">=20")
+            _mt = by_mag.setdefault(_mb, [0, 0])
+            _mt[0] += 1
+            _mt[1] += 1 if (lo <= real <= hi) else 0
         # 方向只统计"预测确实给出了方向"的样本(med 与起点相同 = 预测持平, 无法判定)
         directed = med is not None and abs(med - s) > 1e-9
         if directed:
@@ -222,6 +230,14 @@ def main():
         print("p_up Brier  : %.4f (n=%d)  [越小越好; 0.25 = 瞎猜]" % (brier / brier_n, brier_n))
     if cov_n:
         print("区间覆盖    : %.1f%% (%d/%d)  [目标 50%%]" % (100.0 * cov_hit / cov_n, cov_hit, cov_n))
+    if by_mag:
+        print("\n覆盖按实际变动幅度分档(|Δ|=|终点-起点|):")
+        for b in ("<10", "10-20", ">=20"):
+            n, okc = by_mag.get(b, [0, 0])
+            if n == 0:
+                continue
+            _flag = "  ← 剧烈行情, 区间失效带" if b == ">=20" and okc / n < 0.30 else ""
+            print("  |Δ|%-6s 覆盖 %.1f%% (%d/%d)%s" % (b + ":", 100.0 * okc / n, okc, n, _flag))
     print("\n分区间(按预测起点分数):")
     for g in ("cold", "mid", "hot"):
         if g not in by_regime:

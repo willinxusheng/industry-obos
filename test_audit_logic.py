@@ -230,6 +230,69 @@ finally:
         os.unlink(os.path.join(tmp, fn))
     os.rmdir(tmp)
 
+print("\n===== H 覆盖按变动幅度分档(by_mag): 档位归属与失效标记 =====")
+# 起点 50, 实际终点 60 => |Δ|=10 -> "10-20" 档, 落在 [55,65] 内 => 覆盖 100%
+# 再造一个 |Δ|=25 的大幅样本 => ">=20" 档, 落到区间外 => 覆盖 0%
+obos_h = [industry("c%d" % i, [50.0] * N, 50.0) for i in range(2)]
+obos_h[0]["score"][T_ASOF + 30] = 60.0    # |Δ|=10
+obos_h[1]["score"][T_ASOF + 30] = 25.0    # |Δ|=25
+rows_h = [
+    snap(ASOF, "c0", 50.0, med=60.0, lo=55.0, hi=65.0, p_up=0.5),
+    snap(ASOF, "c1", 50.0, med=55.0, lo=48.0, hi=60.0, p_up=0.5),
+]
+rc, out = run(obos_h, rows_h)
+if rc != 0:
+    bad("正常分档数据却返回 %s" % rc)
+if "|Δ|10-20: 覆盖 100.0% (1/1)" in out:
+    ok("10-20 档归属与覆盖正确(|Δ|=10)")
+else:
+    bad("10-20 档输出不符:\n%s" % out)
+if "|Δ|>=20" in out and "覆盖 0.0% (0/1)" in out and "区间失效带" in out:
+    ok(">=20 档归属正确且带失效标记(|Δ|=25 区间外)")
+else:
+    bad(">=20 档输出不符(缺分档或缺失效标记):\n%s" % out)
+
+print("\n===== I PIT 回写防护: 历史日期的预测不得追加进日志 =====")
+tmp = tempfile.mkdtemp(prefix="audit_t_pit_")
+try:
+    p = os.path.join(tmp, "prediction_log.jsonl")
+    # 日志中已有较新的日期 2026-01-10
+    with io.open(p, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"code": "c0", "asof": "2026-01-10", "name": "x"},
+                           ensure_ascii=False) + "\n")
+    old = compute.PRED_LOG
+    compute.PRED_LOG = p
+    try:
+        inds = [{"code": "c0", "name": "x", "cur_score": 50.0, "state": "中性",
+                 "forecast": {"median": [1.0] * 30, "p25": [1.0] * 30,
+                              "p75": [2.0] * 30, "p_up": 0.5}}]
+        _cap = io.StringIO()
+        with contextlib.redirect_stdout(_cap):
+            compute.append_prediction_log("2026-01-05", inds)   # 试图回写历史
+        n = sum(1 for _ in io.open(p, encoding="utf-8"))
+        if n == 1:
+            ok("回写历史日期被拒绝(日志未增行)")
+        else:
+            bad("历史日期被追加(行数 %d) —— 事后伪造的预测混入了证据链" % n)
+        if "PIT 防护" in _cap.getvalue():
+            ok("拒绝时输出 PIT 防护警告")
+        else:
+            bad("拒绝时缺少警告输出:\n%s" % _cap.getvalue())
+        # 更新日期必须照常写入 —— 防护不能误伤正常前向写入
+        with contextlib.redirect_stdout(io.StringIO()):
+            compute.append_prediction_log("2026-01-11", inds)
+        n2 = sum(1 for _ in io.open(p, encoding="utf-8"))
+        if n2 == 2:
+            ok("前向日期照常追加(防护未误伤)")
+        else:
+            bad("前向日期被防护误拦(行数 %d)" % n2)
+    finally:
+        compute.PRED_LOG = old
+finally:
+    for fn in os.listdir(tmp):
+        os.unlink(os.path.join(tmp, fn))
+    os.rmdir(tmp)
+
 print()
 if fail == 0:
     print("AUDIT LOGIC TEST PASSED：审计统计口径与日志幂等在受控反演下均正确")

@@ -68,24 +68,34 @@ def append_prediction_log(asof, industries, main=None, path=None):
       旧行没有该字段，读取方必须容忍（按"未标注"分组），不得因此判契约破损。
     """
     if os.path.exists(path):
+        _max_asof = None
         with open(path, encoding="utf-8") as f:
             for line in f:
-                # [2026-09-05] 原实现按行首前缀 '{"asof":"..."}' 匹配, 与 json.dumps 的
-                #   键顺序强耦合: 哪天给本行加个字段且排在 asof 前面, 幂等就静默失效,
-                #   而 CI 一天最多跑 48 次 —— 同一天会被重复追加, 日志膨胀、复核时
-                #   Brier/命中率被重复样本带偏, 且这种污染事后极难察觉。
-                #   改为"裸日期子串预筛 + 解析确认": 预筛只认日期本身, 不含键名/引号/
-                #   分隔符, 键顺序、separators 怎么变都不影响; 命中后再解析整行,
-                #   确认是 asof 字段本身等于当日(而非某处恰好出现同形字符串)。
-                #   ⚠️ 别把子串写成 '"asof":"%s"' —— 那又把生死交给序列化格式了
-                #      (json.dumps 默认带空格 ": ", 与写入时的紧凑 separators 不同)。
-                if asof not in line:
-                    continue
+                # [2026-11-20] R11/B1 PIT 回写防护需要日志**最大** asof —— 因此必须逐行
+                #   解析。不能沿用幂等检查的"裸日期子串预筛 + 不匹配即 continue"：
+                #   那会把不含当前 asof 的行全部跳过, 最大值永远算不出来(反演测试 I
+                #   实证防护静默失效)。日志千行量级 × CI 每日 ≤48 次, 逐行解析成本可忽略。
                 try:
-                    if json.loads(line).get("asof") == asof:
-                        return  # 当日已记录, 幂等
+                    _d = json.loads(line).get("asof")
                 except ValueError:
                     continue
+                if not _d:
+                    continue
+                if _d == asof:
+                    return  # 当日已记录, 幂等
+                if _max_asof is None or _d > _max_asof:
+                    _max_asof = _d
+        # [2026-11-20] R11/B1 PIT 回写防护 —— 故障注入实证的洞: 用旧快照本地实跑
+        #   compute.py 时 asof 会退回历史日期(实测 2026-08-26 的"事后预测"被成功
+        #   追加进日志, 且混入成熟样本污染真样本外对账)。预测日志的全部价值在于
+        #   "当时写下、事后不能改", 允许回写历史日期等于允许伪造证据链。
+        #   CI 正常路径 asof 永远 >= 日志最大值, 此防护不触发; 只有数据回退的
+        #   异常运行才会被拦下。拒绝写入而非报错退出 —— 不让污染阻断 CI 主流程。
+        if _max_asof and asof < _max_asof:
+            print("::warning::[PIT 防护] 拒绝回写历史预测: asof=%s < 日志最大 asof=%s"
+                  "(数据回退? 请核对取数源, 历史日期的预测属事后伪造, 不得入日志)"
+                  % (asof, _max_asof), flush=True)
+            return
     lines = []
     for ind in industries:
         fc = ind.get("forecast") or {}
@@ -115,15 +125,27 @@ def append_metrics_log(asof, out):
     CI 一天最多跑 48 次, 幂等一旦静默失效就会同日重复追加, 漂移序列被重复样本带偏。
     """
     if os.path.exists(MET_LOG):
+        _max_asof = None
         with open(MET_LOG, encoding="utf-8") as f:
             for line in f:
-                if asof not in line:
-                    continue
+                # [2026-11-20] R11/B1 同款逐行解析(与 append_prediction_log 同型洞、
+                #   同一修法: 子串预筛会跳过不含当前日期的行, 防护静默失效)。
                 try:
-                    if json.loads(line).get("asof") == asof:
-                        return  # 当日已记录, 幂等
+                    _d = json.loads(line).get("asof")
                 except ValueError:
                     continue
+                if not _d:
+                    continue
+                if _d == asof:
+                    return  # 当日已记录, 幂等
+                if _max_asof is None or _d > _max_asof:
+                    _max_asof = _d
+        # [2026-11-20] R11/B1 同款 PIT 回写防护 —— 漂移日志被历史行污染会让
+        #   "漂移监控"读到假序列, 同类问题一次扫净。
+        if _max_asof and asof < _max_asof:
+            print("::warning::[PIT 防护] 拒绝回写历史指标: asof=%s < 日志最大 asof=%s"
+                  % (asof, _max_asof), flush=True)
+            return
     bt = out.get("backtest") or {}
     main = bt.get("main_method") or "-"
     mm = bt.get(main) or {}
@@ -1156,6 +1178,25 @@ def main(sub_mode=False):
                     if _parts:
                         bt["conclusion"] += (" 分 regime：" + "，".join(_parts) +
                             " —— 信号强弱的分布比聚合数更重要。")
+                # [2026-11-20] R11/B2+B3：按实际变动幅度分档披露覆盖。589 行成熟样本显示
+                #   聚合覆盖 39.9% 的根因是「|Δ分数|>=20 的剧烈行情档覆盖仅 8.4%」——
+                #   区间校准基于历史波动分位, 对 regime 级大波动系统性失效, 且任何
+                #   "用历史再选一个更宽乘子"的修法都必然滞后于下一次 regime 切换
+                #   (R8/R9 已两次实证历史选参无法外推)。因此修披露不修参数:
+                #   把"剧烈行情下区间不可作交易依据"这句实话摆上板, 由使用者自行降权。
+                _mg = _o.get("by_mag") or {}
+                if _mg:
+                    _CN_M = {"<10": "|Δ|<10", "10-20": "|Δ|10-20", ">=20": "|Δ|>=20"}
+                    _mparts = []
+                    for _b in ("<10", "10-20", ">=20"):
+                        _v = _mg.get(_b)
+                        if isinstance(_v, dict) and _v.get("n"):
+                            _mparts.append("%s(n=%d) 覆盖 %s%%" % (
+                                _CN_M[_b], _v["n"],
+                                "%.1f" % (_v["cov"] * 100) if _v.get("cov") is not None else "N/A"))
+                    if _mparts:
+                        bt["conclusion"] += (" 覆盖按变动幅度分档：" + "，".join(_mparts) +
+                            " —— 剧烈行情(|Δ|>=20)档覆盖大幅低于 50% 目标, 该档区间不可作交易依据。")
     except Exception as _e:
         print("oos audit failed:", repr(_e), flush=True)
         bt["oos"] = {"error": repr(_e)[:120]}

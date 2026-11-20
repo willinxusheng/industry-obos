@@ -45,6 +45,12 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
     br = []
     by_reg = {"cold": [0, 0, 0, 0], "mid": [0, 0, 0, 0], "hot": [0, 0, 0, 0]}
     #                                  ^hit ^n  ^cov_hit ^cov_n
+    # [2026-11-20] R11/B2 按实际变动幅度分档覆盖 —— 聚合覆盖率 39.9% 的根因诊断:
+    #   |实际变动|>=20 的剧烈行情档覆盖仅 8.4%(249 行), 区间校准对大波动系统性失效。
+    #   不分档披露, 用户会以为"覆盖 ~40% = 区间整体偏窄"; 分档后才能看清:
+    #   小幅(<10) 70% / 中幅(10-20) 49% / 大幅(>=20) 8% —— 失效集中在剧烈行情。
+    by_mag = {"<10": [0, 0], "10-20": [0, 0], ">=20": [0, 0]}
+    #                ^n    ^cov_hit
     asofs = set()
     for (a, code), r in seen.items():
         i = idx.get(a)
@@ -81,6 +87,10 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
             #   中区 29.4% / 冷区 64.1% 的强分化，必须拆开披露。
             by_reg[g][3] += 1
             by_reg[g][2] += okc
+            # [2026-11-20] R11/B2 按实际变动幅度分档(与 by_reg 同批样本)
+            _mb = "<10" if abs(d_act) < 10 else ("10-20" if abs(d_act) < 20 else ">=20")
+            by_mag[_mb][0] += 1
+            by_mag[_mb][1] += okc
         if r.get("p_up") is not None:
             br.append((r["p_up"] - (1.0 if d_act > 0 else 0.0)) ** 2)
     if n_all < min_n:
@@ -101,6 +111,9 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
                           "cov": round(v[2] / v[3], 3) if v[3] else None,
                           "cov_n": v[3]}
                       for g, v in by_reg.items()},
+        # [2026-11-20] R11/B2 剧烈行情档是区间校准的真实失效点, 必须随 oos 一起进产物
+        "by_mag": {b: {"n": v[0], "cov": round(v[1] / v[0], 3) if v[0] else None}
+                   for b, v in by_mag.items()},
     }
 
 
