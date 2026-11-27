@@ -123,6 +123,11 @@ if "区间覆盖    : 100.0%" in out:
     ok("区间覆盖 100%")
 else:
     bad("区间覆盖不是 100%:\n%s" % out)
+# [2026-11-27] R12: 全对场景 p_up=1.0/实际升=1.0 -> 均值=实际率=1.0, base_brier=0
+if "p_up 校准对照: 预测均值 1.000 / 实际上升率 1.000 / 偏差 +0.0%" in out:
+    ok("A 场景 p_up 校准对照均值/实际率正确")
+else:
+    bad("A 场景校准对照输出不符:\n%s" % out)
 
 print("\n===== B 全错: 命中/Brier/覆盖 应为 0% / 1.0 / 0% =====")
 rows = [snap(ASOF, x["code"], 50.0, med=40.0, lo=30.0, hi=40.0, p_up=0.0) for x in obos]
@@ -292,6 +297,23 @@ finally:
     for fn in os.listdir(tmp):
         os.unlink(os.path.join(tmp, fn))
     os.rmdir(tmp)
+
+print("\n===== J p_up 校准失效对照: 预测 0.9 但实际全跌 -> 差于瞎猜/基准率 =====")
+# 3 个行业, 起点 50, 实际全部跌到 40; 预测 p_up=0.9 (高估升温)
+obos_j = [industry("c%d" % i, [50.0] * N, 50.0) for i in range(3)]
+for x in obos_j:
+    x["score"][T_ASOF + 30] = 40.0
+rows_j = [snap(ASOF, x["code"], 50.0, med=40.0, lo=30.0, hi=45.0, p_up=0.9) for x in obos_j]
+rc, out = run(obos_j, rows_j)
+# 实际升率=0 -> base_brier=0; p_up=0.9 -> Brier=0.81; 偏差 +90pp
+if "p_up 校准对照: 预测均值 0.900 / 实际上升率 0.000 / 偏差 +90.0%" in out:
+    ok("J 场景 校准均值/实际率/偏差正确")
+else:
+    bad("J 场景 校准对照不符:\n%s" % out)
+if "恒定基准率Brier 0.0000" in out and "校准失效: 差于瞎猜与恒定基准率" in out:
+    ok("J 场景 失效标记正确(Brier 0.81 > 瞎猜 0.25 > 基准率 0)")
+else:
+    bad("J 场景 失效标记缺失:\n%s" % out)
 
 print()
 if fail == 0:

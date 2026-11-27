@@ -489,9 +489,19 @@
     var pu = x.forecast.p_up;
     // [2026-09-03] p_up 已停用 isotonic 后验映射(样本外验证无一配置改善, 见 obos_core [E2] 注),
     // 交付原始概率 —— 故不再标注"已按历史样本保序校准 Brier x→y"。
+    // [2026-11-27] R12: 真样本外 p_up 校准已失效(均值 0.59 vs 实际升 0.32, Brier 差于瞎猜)。
+    //   动态读 bt.oos.pup, 若确认失效则加醒目警示 —— 不能让"升温概率 59%"误导成 59% 会涨。
+    var _oosPup = ((DATA.backtest || {}).oos || {}).pup || {};
+    var _pupBad = (_oosPup.brier != null && _oosPup.base_brier != null
+                   && _oosPup.brier > 0.25 && _oosPup.brier > _oosPup.base_brier);
     var puTxt = (typeof pu === 'number' && isFinite(pu))
       ? '升温概率 <b style="color:' + (pu > 0.55 ? '#b1493f' : (pu < 0.45 ? '#3c8168' : '#41617e')) + '">'
         + (pu * 100).toFixed(0) + '%</b>（回测 AUC ' + fmt((DATA.backtest || {}).p_up_auc, 3) + '）'
+        + (_pupBad
+          ? '。<b style="color:#b1493f">样本外校准警示</b>：真前瞻 p_up 均值 '
+            + (_oosPup.mean * 100).toFixed(0) + '% 但实际升温仅 '
+            + (_oosPup.realized_up * 100).toFixed(0) + '%，概率值高估，请以中位升降方向为主'
+          : '')
         + ((typeof lastScore === 'number' && lastScore >= 40 && lastScore <= 60)
           ? '。<b style="color:#41617e">中性区提示</b>：当前处 40-60 震荡带，分数在该区近乎随机游走（方向优势主要来自均值回复，见回测表「均值回复基准」行）、p_up 校准偏差大，请以中位升降方向为主'
           : '')

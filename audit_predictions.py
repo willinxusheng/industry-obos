@@ -158,6 +158,8 @@ def main():
     f_ok = f_n = 0                      # 过滤口径(|实际变动|>=1, 与旧版一致, 便于对照)
     brier = 0.0
     brier_n = 0
+    # [2026-11-27] R12 p_up 校准对照累计(与 oos_audit.pup 同口径)
+    pup_sum = pup_up = 0.0
     cov_hit = cov_n = 0
     # [2026-11-20] R11/B2 按实际变动幅度分档覆盖: [n, cov_hit]
     by_mag = {}
@@ -183,6 +185,8 @@ def main():
             y = 1 if real > s else 0
             brier += (pup - y) ** 2
             brier_n += 1
+            pup_sum += pup
+            pup_up += y
         if lo is not None and hi is not None:
             cov_n += 1
             cov_hit += 1 if (lo <= real <= hi) else 0
@@ -228,6 +232,13 @@ def main():
               % (HORIZON, 100.0 * f_ok / f_n, f_ok, f_n))
     if brier_n:
         print("p_up Brier  : %.4f (n=%d)  [越小越好; 0.25 = 瞎猜]" % (brier / brier_n, brier_n))
+        # [2026-11-27] R12: 只报裸 Brier 无法判断概率是否有校准价值 —— 必须给两个对照基准。
+        _pu = pup_sum / brier_n
+        _ru = pup_up / brier_n
+        _bad = "  ← 校准失效: 差于瞎猜与恒定基准率" if brier / brier_n > 0.25 and brier / brier_n > _ru * (1 - _ru) else ""
+        print("  p_up 校准对照: 预测均值 %.3f / 实际上升率 %.3f / 偏差 %+.1f%%; "
+              "恒定基准率Brier %.4f, 瞎猜 0.2500%s"
+              % (_pu, _ru, (_pu - _ru) * 100, _ru * (1 - _ru), _bad))
     if cov_n:
         print("区间覆盖    : %.1f%% (%d/%d)  [目标 50%%]" % (100.0 * cov_hit / cov_n, cov_hit, cov_n))
     if by_mag:

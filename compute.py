@@ -1197,6 +1197,19 @@ def main(sub_mode=False):
                     if _mparts:
                         bt["conclusion"] += (" 覆盖按变动幅度分档：" + "，".join(_mparts) +
                             " —— 剧烈行情(|Δ|>=20)档覆盖大幅低于 50% 目标, 该档区间不可作交易依据。")
+                # [2026-11-27] R12: p_up 校准对照。真样本外概率值已失效(偏差 +27.5pp,
+                #   Brier 0.282 > 瞎猜 0.25 > 恒定基准率 0.216), 只报裸数字会让人误读。
+                _pu = _o.get("pup") or {}
+                if _pu.get("mean") is not None and _pu.get("realized_up") is not None:
+                    _calFail = ("差于瞎猜与恒定基准率, 概率值无校准价值(排序 AUC 仍有效)"
+                                if (_pu.get("brier") or 1) > 0.25
+                                and (_pu.get("brier") or 1) > (_pu.get("base_brier") or 0)
+                                else "仍有校准价值")
+                    bt["conclusion"] += (
+                        " 升温概率校准：p_up 均值 %.3f vs 实际上升率 %.3f（偏差 %+.1f%%），"
+                        "Brier %.4f vs 恒定基准率 %.4f / 瞎猜 0.2500 —— %s，请以中位升降方向为主。"
+                        % (_pu["mean"], _pu["realized_up"], _pu.get("bias", 0) * 100,
+                           _pu.get("brier") or 0, _pu.get("base_brier") or 0, _calFail))
     except Exception as _e:
         print("oos audit failed:", repr(_e), flush=True)
         bt["oos"] = {"error": repr(_e)[:120]}

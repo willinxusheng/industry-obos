@@ -43,6 +43,11 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
     n_mature = 0
     cov = n_cov = 0
     br = []
+    # [2026-11-27] R12: p_up 校准对照。真样本外 p_up 均值 0.59 但实际上升率仅 0.32,
+    #   Brier 0.28 差于瞎猜 0.25 —— 只报裸 Brier 会让用户以为"0.28 还行"。必须把
+    #   恒定基准率(p=实际上升率)的 Brier 一并摆出, 否则无法判断概率是否有校准价值。
+    pup_sum = pup_up = 0.0
+    pup_n = 0
     by_reg = {"cold": [0, 0, 0, 0], "mid": [0, 0, 0, 0], "hot": [0, 0, 0, 0]}
     #                                  ^hit ^n  ^cov_hit ^cov_n
     # [2026-11-20] R11/B2 按实际变动幅度分档覆盖 —— 聚合覆盖率 39.9% 的根因诊断:
@@ -92,7 +97,11 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
             by_mag[_mb][0] += 1
             by_mag[_mb][1] += okc
         if r.get("p_up") is not None:
-            br.append((r["p_up"] - (1.0 if d_act > 0 else 0.0)) ** 2)
+            _y = 1.0 if d_act > 0 else 0.0
+            br.append((r["p_up"] - _y) ** 2)
+            pup_sum += r["p_up"]
+            pup_up += _y
+            pup_n += 1
     if n_all < min_n:
         return {"matured": 0, "n_asof": len(asofs), "need": "至少 %d 行成熟样本" % min_n}
     return {
@@ -106,6 +115,17 @@ def audit_rows(rows, dates, scores, horizon=30, min_n=30):
         "n_big": n_big,
         "coverage": round(cov / n_cov, 3) if n_cov else None,
         "brier": round(sum(br) / len(br), 4) if br else None,
+        # [2026-11-27] R12 p_up 校准对照: 均值/实际率/偏差/两个基准 Brier。
+        #   恒定基准率 Brier = p*(1-p) (p=实际上升率) 是"只用基准率、不用模型"的下界;
+        #   瞎猜 = 0.25。若模型 Brier 差于这两者, 说明概率值没有校准价值(排序 AUC 可能仍在)。
+        "pup": {
+            "mean": round(pup_sum / pup_n, 3) if pup_n else None,
+            "realized_up": round(pup_up / pup_n, 3) if pup_n else None,
+            "bias": round((pup_sum - pup_up) / pup_n, 3) if pup_n else None,
+            "base_brier": round((pup_up / pup_n) * (1 - pup_up / pup_n), 4) if pup_n else None,
+            "brier": round(sum(br) / len(br), 4) if br else None,
+            "n": int(pup_n),
+        },
         "by_regime": {g: {"dir": round(v[0] / v[1], 3) if v[1] else None,
                           "n": v[1],
                           "cov": round(v[2] / v[3], 3) if v[3] else None,
